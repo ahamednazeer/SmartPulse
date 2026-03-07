@@ -1,0 +1,14 @@
+{
+  "appId": "io.smartpulse.app",
+  "appName": "SmartPulse",
+  "webDir": "out",
+  "bundledWebRuntime": false,
+  "android": {
+    "allowMixedContent": true
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 0
+    }
+  }
+}

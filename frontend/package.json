@@ -1,0 +1,41 @@
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "build:mobile": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "cap:sync": "npx cap sync android",
+    "cap:open": "npx cap open android",
+    "android:build": "npm run build:mobile && npm run cap:sync",
+    "android:e2e": "./scripts/android-e2e-device.sh"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.1.0",
+    "@capacitor/app": "^8.0.1",
+    "@capacitor/cli": "^8.1.0",
+    "@capacitor/core": "^8.1.0",
+    "@capacitor/device": "^8.0.1",
+    "@capacitor/local-notifications": "^8.0.1",
+    "@capacitor/network": "^8.0.1",
+    "@capacitor/preferences": "^8.0.1",
+    "@phosphor-icons/react": "^2.1.10",
+    "next": "16.1.6",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "sonner": "^2.0.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.6",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
