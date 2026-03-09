@@ -57,3 +57,23 @@ Detailed Android plugin, permissions, and sync architecture:
 - `src/lib/mobile/usageSync.ts`: 6-hour collection + batch sync cycle
 - `src/lib/mobile/permissions.ts`: native permission checks for UI toggles
 - `src/hooks/useUsageSync.ts`: starts sync loop from dashboard shell
+- `src/components/analysis/ModelOpsWorkspace.tsx`: model operations UI (ground-truth labels + monitoring)
+
+## Model Operations (Dashboard)
+
+Route:
+
+- `/dashboard/analysis/model-ops`
+
+Capabilities:
+
+- submit ground-truth labels (`LOW` / `MODERATE` / `HIGH`) with source/confidence/notes
+- trigger model retraining
+- review calibration, backtest, drift, and fairness diagnostics
+
+Related frontend API methods in `src/lib/api.ts`:
+
+- `upsertGroundTruthLabel`
+- `getGroundTruthLabels`
+- `getLatestGroundTruthLabel`
+- `getPredictionMonitoring`

@@ -1,232 +1,174 @@
 # SmartPulse ML Model Training and Algorithm Internals
 
-Last updated: 2026-03-06
+Last updated: 2026-03-07
 
-This document explains how SmartPulse currently performs risk modeling, what data is used, how the training flow works, and what internal steps run before and after prediction.
+This document reflects the current implementation in backend and frontend after the modeling upgrades (ground-truth ingestion, trainable scorers, contextual features, calibration/backtest monitoring, and fairness audit).
 
-## Implementation update (2026-03-06)
+## 1) Current model architecture
 
-The following upgrades are now implemented in code:
+SmartPulse now uses a hybrid scoring architecture:
 
-1. Ground-truth label ingestion API (`/api/ground-truth/*`) and training integration.
-2. Trainable per-user linear scorer coefficients persisted in `model_profiles.learnedModelJson`.
-3. Data-driven feature importance persisted in `model_profiles.featureImportanceJson`.
-4. Contextual telemetry features integrated into preprocessing and scoring.
-5. Calibration/backtesting/drift/fairness diagnostics endpoint (`/api/prediction/monitor`).
+1. Deterministic feature engineering and preprocessing.
+2. Ensemble prediction (`randomForest`, `extraTrees`, `svm`) with configurable weights.
+3. Optional learned per-user tree-ensemble scorers from training history.
+4. Deterministic fallback formulas when learned coefficients are unavailable.
 
-## 1) What the "ML model" is in SmartPulse today
-
-SmartPulse currently uses a **deterministic ensemble scoring system** implemented in backend services, not a library-trained model (for example, no TensorFlow, PyTorch, scikit-learn).
-
-The pipeline has:
-
-1. Data ingestion from survey + usage telemetry.
-2. Preprocessing and feature engineering.
-3. Three model-style scorers (RandomForest-like, ExtraTrees-like, SVM-like).
-4. Weighted ensemble score (0-100) and risk class (`LOW`/`MODERATE`/`HIGH`).
-5. Optional weight tuning via grid search (`POST /api/prediction/train`).
-
-Code locations:
+Key services:
 
 - `backend/src/preprocessing/preprocessing.service.ts`
 - `backend/src/prediction/prediction.service.ts`
 - `backend/src/risk-analysis/risk-analysis.service.ts`
-- `backend/src/recommendation/recommendation.service.ts`
 
 ## 2) Data considered by the algorithm
 
-### 2.1 Core behavioral data used directly for risk prediction
+### 2.1 Behavioral and survey inputs
 
-From `usage_records`, the prediction pipeline currently uses:
+Core fields used in prediction:
 
-- `screenTimeMinutes`
-- `unlockCount`
-- `socialMediaMinutes`
-- `nightUsageMinutes`
-- `longestSessionMinutes`
+- Usage: `screenTimeMinutes`, `unlockCount`, `socialMediaMinutes`, `nightUsageMinutes`, `longestSessionMinutes`
+- Survey: `stressLevel`, `anxietyLevel`, `depressionLevel`, `sleepQuality`, `sleepHours`, `socialInteraction`, `dailyProductivity`, `phoneDependence`, `mood`
 
-### 2.2 Psychological data used directly for risk prediction
+### 2.2 Contextual telemetry now integrated
 
-From `survey_responses`, the preprocessing pipeline uses the latest survey only:
+SmartPulse now parses and uses contextual JSON payloads from `usage_records`:
 
-- `stressLevel`
-- `anxietyLevel`
-- `depressionLevel`
-- `sleepQuality`
-- `sleepHours`
-- `socialInteraction`
-- `dailyProductivity`
-- `phoneDependence`
-- `mood`
+- `notificationInteractionJson` -> notification response rate
+- `sleepProxyJson` -> sleep regularity, wake checks, midnight sessions
+- `connectivityContextJson` -> transition count, offline minutes, longest offline streak
+- `activityContextJson` -> short session count
+- `locationContextJson` -> commute minutes
+- `notificationCount` -> raw notification load
 
-### 2.3 Additional telemetry collected and stored (not part of current scoring)
+### 2.3 Ground-truth labels
 
-Also stored in `usage_records`:
+External validated labels are stored in `ground_truth_labels` and linked by date:
 
-- `appUsageJson`
-- `appCategoryTimelineJson`
-- `sessionEventsJson`
-- `notificationInteractionJson`
-- `sleepProxyJson`
-- `activityContextJson`
-- `batteryContextJson`
-- `connectivityContextJson`
-- `locationContextJson`
-- `microCheckinsJson`
-- `interventionOutcomesJson`
-- `notificationCount`
-- `peakUsageHour`
+- `label` (`LOW`, `MODERATE`, `HIGH`)
+- `source` (for example `CLINICAL_ASSESSMENT`)
+- `confidence` (`0..1`, optional)
+- `notes` (optional)
 
-These enrich analytics and future model potential, but are **not currently consumed** by the scoring equations in `PredictionService`.
+Training prefers ground-truth labels over internally derived labels when both exist for the same date.
 
-### 2.4 How the mobile app captures data
+### 2.4 Pretrained data usage
 
-Android plugin (`SmartPulseUsagePlugin`) builds daily snapshots from `UsageStatsManager` + usage events:
+SmartPulse does **not** use external pretrained model weights for prediction.
 
-- Foreground minutes per app -> total screen time.
-- `KEYGUARD_HIDDEN` events -> unlock count.
-- Category keyword matching on package/app label -> social/video/games/productivity buckets.
-- Night usage from hourly distribution (`22:00-06:00`).
-- Longest continuous session from foreground/background pairs.
-- Session timeline and notification interaction telemetry.
-- Heuristic context objects (sleep/activity/location/battery/connectivity).
+- learned models are trained per user from SmartPulse-collected history
+- labels come from `ground_truth_labels` when present, otherwise derived labels
+- inference falls back to deterministic formulas when trainable models are unavailable
 
-Usage sync behavior:
+## 3) Preprocessing internals
 
-- App collects and buffers daily records locally.
-- Sync cycle runs every 6 hours and on app resume.
-- Batch upload endpoint: `POST /api/usage/batch`.
+### 3.1 Data quality pipeline
 
-## 3) Preprocessing and feature engineering internals
+For each preprocessing run:
 
-### 3.1 Windowing and record cleanup
+- lookback window clamped to `7..180` days (default `30`)
+- duplicate usage rows dropped by date (latest kept)
+- strict bounds enforced for usage values
+- relational invalid rows removed (`socialMedia > screenTime`, etc.)
+- missing/incomplete survey replaced by neutral defaults
 
-For each preprocess call:
+### 3.2 Normalization and engineered features
 
-- Lookback days are clamped to `7..180` (default `30`).
-- Usage records are deduplicated by date (latest `createdAt` kept).
-- Invalid usage rows are dropped if:
-  - date format is invalid (`YYYY-MM-DD` required),
-  - values are out of strict bounds,
-  - relational checks fail (`socialMedia > screenTime`, etc.).
+Existing engineered features remain (addiction behavior, digital dependency, stress, sleep disruption, etc.) and new contextual features were added:
 
-Strict bounds:
+- `notificationLoadScore`
+- `sleepRegularityRiskScore`
+- `connectivityDisruptionScore`
+- `activityFragmentationScore`
+- `commuteImpulseScore`
+- context averages: `avgNotificationCount`, `avgNotificationResponseRate`, `avgSleepRegularityScore`, `avgConnectivityTransitions`, `avgOfflineMinutes`, `avgShortSessionCount`, `avgCommuteMinutes`
 
-- `screenTimeMinutes`: `0..1440`
-- `unlockCount`: `0..2000`
-- `socialMediaMinutes`: `0..1440`
-- `nightUsageMinutes`: `0..720`
-- `longestSessionMinutes`: `0..720`
-- `peakUsageHour`: `0..23` (nullable)
-
-### 3.2 Survey validation fallback behavior
-
-- If latest survey is missing or malformed, SmartPulse uses neutral defaults:
-  - stress/anxiety/depression/sleepQuality/socialInteraction/dailyProductivity/phoneDependence = `5`
-  - sleepHours = `7`
-  - mood = `3`
-- A quality warning is recorded.
-
-### 3.3 Normalization
-
-Usage averages are computed across cleaned lookback records.
-
-Supporting value:
-
-- `activeHoursEstimate = clamp((avgScreenTimeMinutes / 60) * 1.6 + 3.2, 4, 18)`
-
-Key normalized values:
+Key normalization rules currently used in code:
 
 - `screenTimeNorm = normalize(avgScreenTimeMinutes, 0, 720)`
 - `unlockNorm = normalize(avgUnlockCount, 0, 180)`
 - `socialNorm = normalize(avgSocialMediaMinutes, 0, 360)`
 - `nightNorm = normalize(avgNightUsageMinutes, 0, 180)`
 - `sessionNorm = normalize(avgLongestSessionMinutes, 0, 120)`
-- `stressNorm = clamp((stress + anxiety + depression) / 30, 0, 1)`
+- `notificationNorm = normalize(avgNotificationCount, 0, 300)`
+- `notificationResponseNorm = clamp(avgNotificationResponseRate / 100, 0, 1)`
+- `sleepRegularityRiskNorm = clamp((100 - avgSleepRegularityScore) / 100, 0, 1)`
+- `connectivityDisruptionNorm = clamp(normalize(avgOfflineMinutes, 0, 480) * 0.6 + normalize(avgConnectivityTransitions, 0, 40) * 0.4, 0, 1)`
+- `activityFragmentationNorm = clamp(normalize(avgShortSessionCount, 0, 80), 0, 1)`
+- `commuteImpulseNorm = clamp(normalize(avgCommuteMinutes, 0, 240), 0, 1)`
+- `stressNorm = clamp((stressLevel + anxietyLevel + depressionLevel) / 30, 0, 1)`
 - `dependenceNorm = normalize(phoneDependence, 1, 10)`
 - `compulsiveCheckingNorm = normalize(avgUnlockCount / activeHoursEstimate, 0, 18)`
-- `socialIntensityNorm = clamp(avgSocialMediaMinutes / max(avgScreenTimeMinutes,1), 0, 1)`
-- `nightRatioNorm = clamp(avgNightUsageMinutes / max(avgScreenTimeMinutes,1), 0, 1)`
+- `socialIntensityNorm = clamp(avgSocialMediaMinutes / max(avgScreenTimeMinutes, 1), 0, 1)`
+- `nightRatioNorm = clamp(avgNightUsageMinutes / max(avgScreenTimeMinutes, 1), 0, 1)`
 
-Sleep disruption normalization:
+Sleep normalization:
 
 - `sleepHourPenalty = normalize(7 - sleepHours, 0, 4)` when `sleepHours < 7`
-- else `sleepHourPenalty = normalize(sleepHours - 9, 0, 4) * 0.4`
+- otherwise `sleepHourPenalty = normalize(sleepHours - 9, 0, 4) * 0.4`
 - `sleepQualityPenalty = normalize(10 - sleepQuality, 0, 9)`
 - `sleepDisruptionNorm = clamp(sleepHourPenalty * 0.6 + sleepQualityPenalty * 0.4, 0, 1)`
 
-### 3.4 Engineered feature set
+Supporting estimate:
 
-Main engineered scores (0-100 style unless noted):
+- `activeHoursEstimate = clamp((avgScreenTimeMinutes / 60) * 1.6 + 3.2, 4, 18)`
 
-- `lateNightUsageScore = (nightNorm*0.7 + nightRatioNorm*0.3) * 100`
-- `socialMediaDependencyScore = (socialNorm*0.55 + socialIntensityNorm*0.25 + dependenceNorm*0.2) * 100`
-- `addictionBehaviorScore = (screenTimeNorm*0.27 + unlockNorm*0.2 + compulsiveCheckingNorm*0.16 + socialNorm*0.17 + nightNorm*0.12 + sessionNorm*0.08) * 100`
-- `digitalDependencyScore = (screenTimeNorm*0.24 + unlockNorm*0.2 + compulsiveCheckingNorm*0.2 + socialIntensityNorm*0.16 + nightRatioNorm*0.1 + dependenceNorm*0.1) * 100`
-- `psychologicalStressScore = stressNorm * 100`
-- `sleepDisruptionScore = sleepDisruptionNorm * 100`
+Engineered feature formulas:
+
+- `lateNightUsageScore = (nightNorm * 0.7 + nightRatioNorm * 0.3) * 100`
+- `socialMediaDependencyScore = (socialNorm * 0.55 + socialIntensityNorm * 0.25 + dependenceNorm * 0.2) * 100`
+- `notificationLoadScore = (notificationNorm * 0.7 + notificationResponseNorm * 0.3) * 100`
+- `sleepRegularityRiskScore = sleepRegularityRiskNorm * 100`
+- `connectivityDisruptionScore = connectivityDisruptionNorm * 100`
+- `activityFragmentationScore = activityFragmentationNorm * 100`
+- `commuteImpulseScore = commuteImpulseNorm * 100`
 - `moodRiskScore = normalize(5 - mood, 0, 4) * 100`
 - `productivityRiskScore = normalize(10 - dailyProductivity, 0, 9) * 100`
-- `nightUsageRatio = nightRatioNorm * 100`
-- `socialMediaIntensity = socialIntensityNorm * 100`
-- `compulsiveCheckingScore = avgUnlockCount / activeHoursEstimate`
+- `addictionBehaviorScore = (screenTimeNorm * 0.27 + unlockNorm * 0.2 + compulsiveCheckingNorm * 0.16 + socialNorm * 0.17 + nightNorm * 0.12 + sessionNorm * 0.08) * 100`
+- `digitalDependencyScore = (screenTimeNorm * 0.24 + unlockNorm * 0.2 + compulsiveCheckingNorm * 0.2 + socialIntensityNorm * 0.16 + nightRatioNorm * 0.1 + dependenceNorm * 0.1) * 100`
+- `overallRiskSignal = addictionBehaviorScore * 0.39 + digitalDependencyScore * 0.17 + socialMediaDependencyScore * 0.12 + psychologicalStressScore * 0.12 + sleepDisruptionScore * 0.06 + notificationLoadScore * 0.04 + sleepRegularityRiskScore * 0.04 + connectivityDisruptionScore * 0.02 + activityFragmentationScore * 0.01 + commuteImpulseScore * 0.01 + moodRiskScore * 0.01 + productivityRiskScore * 0.01`
 
-Combined risk signal from preprocessing:
+Overall risk signal now blends behavior, psychological, and contextual features:
 
-- `overallRiskSignal = addictionBehaviorScore*0.43 + digitalDependencyScore*0.19 + socialMediaDependencyScore*0.13 + psychologicalStressScore*0.13 + sleepDisruptionScore*0.07 + moodRiskScore*0.03 + productivityRiskScore*0.02`
+- behavior core (addiction/digital/social/night)
+- psychology (stress/sleep/mood/productivity)
+- context (notification/sleep regularity/connectivity/activity/commute)
 
-### 3.5 Feature selection logic
+### 3.3 Feature selection
 
-Selection uses three rules:
+Feature selection still keeps features by:
 
-- Keep if feature is marked essential.
-- Keep if static importance >= `0.7`.
-- Keep if variance signal >= `0.02`.
+- essential feature set membership
+- static importance threshold
+- or variance threshold
 
-Variance signals are computed from historical usage variation (normalized variance). Some survey-only features have variance set to `0` and are kept by importance/essential rules.
+Selected vectors are stored in `feature_store_records.featureVectorJson`.
 
-Outputs saved:
+## 4) Prediction internals
 
-- selected feature vector
-- dropped keys
-- importance and variance maps
-- per-feature selection reason
+### 4.1 Runtime scoring path
 
-### 3.6 Preprocessing label generation
+At inference:
 
-Each feature snapshot also gets a derived class:
+1. Load user feature profile from preprocessing.
+2. Load ensemble weights (`model_profiles.weightsJson` or defaults).
+3. Load learned scorer coefficients (`model_profiles.learnedModelJson`) if available.
+4. Score each model channel:
+   - learned tree-ensemble scorer if available
+   - otherwise deterministic fallback formula
+5. Combine with ensemble weights into `riskScore` (`0..100`).
+6. Classify:
+   - `HIGH >= 70`
+   - `MODERATE >= 40`
+   - else `LOW`
 
-- `HIGH` if `overallRiskSignal >= 70`
-- `MODERATE` if `>= 40`
-- else `LOW`
+Deterministic fallback scorer formulas:
 
-This label is stored as `addictionLabel` in `feature_store_records`.
+- `randomForestScore = addictionBehaviorScore * 0.33 + digitalDependencyScore * 0.18 + socialMediaDependencyScore * 0.16 + lateNightUsageScore * 0.1 + sleepDisruptionScore * 0.07 + notificationLoadScore * 0.06 + sleepRegularityRiskScore * 0.06 + connectivityDisruptionScore * 0.04`
+- `extraTreesScore = addictionBehaviorScore * 0.3 + compulsiveCheckingScore * 1.6 + psychologicalStressScore * 0.17 + productivityRiskScore * 0.08 + socialMediaIntensity * 0.09 + activityFragmentationScore * 0.08 + commuteImpulseScore * 0.04 + notificationLoadScore * 0.06 + bound(((avgScreenTimeMinutes / 720) * (avgUnlockCount / 180) * 100)) * 0.14`
+- `svmScore = overallRiskSignal * 0.5 + digitalDependencyScore * 0.15 + psychologicalStressScore * 0.14 + sleepDisruptionScore * 0.08 + notificationLoadScore * 0.05 + sleepRegularityRiskScore * 0.04 + connectivityDisruptionScore * 0.04`
 
-## 4) Prediction algorithm internals
+Ensemble combination:
 
-### 4.1 Three model-style scorers
-
-Given engineered features:
-
-1. RandomForest-like score
-
-`rf = addictionBehaviorScore*0.42 + digitalDependencyScore*0.23 + socialMediaDependencyScore*0.2 + lateNightUsageScore*0.1 + sleepDisruptionScore*0.05`
-
-2. ExtraTrees-like score
-
-- Interaction term: `behaviorInteraction = (avgScreenTimeMinutes/720) * (avgUnlockCount/180) * 100`
-- Score:
-`et = addictionBehaviorScore*0.35 + compulsiveCheckingScore*1.8 + psychologicalStressScore*0.2 + productivityRiskScore*0.1 + socialMediaIntensity*0.1 + bound(behaviorInteraction)*0.15`
-
-3. SVM-like score
-
-`svm = overallRiskSignal*0.58 + digitalDependencyScore*0.17 + psychologicalStressScore*0.15 + sleepDisruptionScore*0.1`
-
-All bounded to `0..100` and rounded.
-
-### 4.2 Ensemble combination
-
-`riskScore = rf*w_rf + et*w_et + svm*w_svm`
+- `riskScore = randomForestScore * w_rf + extraTreesScore * w_et + svmScore * w_svm`
 
 Default weights:
 
@@ -234,60 +176,73 @@ Default weights:
 - `w_et = 0.35`
 - `w_svm = 0.25`
 
-Risk class:
+### 4.2 Persisted prediction outputs
 
-- `HIGH` if `riskScore >= 70`
-- `MODERATE` if `riskScore >= 40`
-- else `LOW`
+Saved in `prediction_results`:
 
-### 4.3 Prediction insights generated from rules
-
-Rule-based insights are added when thresholds fire, for example:
-
-- unlocks >= 100
-- night usage >= 90 min/day
-- social media >= 180 min/day
-- compulsive checking >= 10 unlocks/active-hour
-- psychological stress >= 65
-
-If none fire, a safe-pattern message is added.
-
-### 4.4 Prediction persistence
-
-Stored in `prediction_results`:
-
-- date
 - `riskScore`, `riskLevel`
-- `randomForestScore`, `extraTreesScore`, `svmScore`
+- channel scores (`randomForestScore`, `extraTreesScore`, `svmScore`)
 - `featureVectorJson`
-- `insightsJson`
+- generated insights
 
-## 5) Training flow (`POST /api/prediction/train`)
+## 5) Training internals (`POST /api/prediction/train`)
 
-### 5.1 Sample assembly
+### 5.1 Sample assembly and label precedence
 
-Training samples are loaded from:
+Training samples are built from:
 
-- `feature_store_records` (selected feature vector + `addictionLabel`)
-- historical `prediction_results` (fallback dates not already in feature store map)
+- `feature_store_records`
+- historical `prediction_results` (fallback when feature-store date missing)
+- `ground_truth_labels` override label by date when present
 
-Key caveat:
+Label source is tracked in training summary:
 
-- Labels come from internal derived classes (`addictionLabel` or prior `riskLevel`), not external clinical ground truth.
+- `GROUND_TRUTH`
+- `DERIVED_FEATURE`
+- `DERIVED_PREDICTION`
 
-### 5.2 Dataset split strategy
+### 5.2 Learned scorer fitting
 
-Samples are date-sorted ascending and split:
+Training now fits per-user non-linear tree ensembles (one per scorer channel):
 
-- 70% train
-- 15% validation
-- 15% test
+- `randomForest` channel model (bagged trees, best split search)
+- `extraTrees` channel model (randomized split search)
+- `svm` channel model (shallow tree ensemble replacing linear learned margin)
 
-Fallback safeguards ensure non-empty validation/test by copying last available samples when needed.
+Algorithm details:
 
-### 5.3 Weight grid search
+- target mapping remains ordinal:
+  - `LOW -> 20`
+  - `MODERATE -> 55`
+  - `HIGH -> 85`
+- each tree recursively minimizes squared error
+- per split, feature subsets are sampled (`featureSubsampleRatio`)
+- split candidates are generated either:
+  - deterministically (`BEST`, midpoint candidates), or
+  - randomly (`RANDOM`, extra-trees style thresholds)
+- stopping conditions:
+  - `maxDepth` reached
+  - or branch size below `2 * minSamplesLeaf`
+  - or no meaningful gain
+- ensemble prediction = weighted average of tree leaf outputs
 
-Grid candidates:
+Channel-specific tree settings:
+
+- `randomForest`: `29` trees, `maxDepth=5`, `minSamplesLeaf=3`, `featureSubsampleRatio=0.65`, `splitCandidatesPerFeature=10`, `splitStrategy=BEST`, `bootstrap=true`
+- `extraTrees`: `35` trees, `maxDepth=5`, `minSamplesLeaf=2`, `featureSubsampleRatio=0.8`, `splitCandidatesPerFeature=14`, `splitStrategy=RANDOM`, `bootstrap=false`
+- `svm`: `21` trees, `maxDepth=4`, `minSamplesLeaf=3`, `featureSubsampleRatio=0.55`, `splitCandidatesPerFeature=8`, `splitStrategy=BEST`, `bootstrap=true`
+
+Preferred feature sets by learned channel:
+
+- `randomForest`: addiction behavior, digital dependency, social dependency, late-night usage, sleep disruption, notification load, sleep regularity risk, connectivity disruption
+- `extraTrees`: addiction behavior, compulsive checking, psychological stress, activity fragmentation, commute impulse, notification load, social intensity, avg screen time, avg unlock count
+- `svm`: overall risk signal, digital dependency, psychological stress, sleep disruption, notification load, sleep regularity risk, connectivity disruption
+
+### 5.3 Ensemble weight search
+
+After learned scorer fitting, SmartPulse performs grid search on ensemble weights over validation F1 (accuracy tie-breaker), then evaluates on test split.
+
+Weight grid currently searched:
 
 - `{0.45, 0.35, 0.20}`
 - `{0.40, 0.35, 0.25}`
@@ -297,127 +252,120 @@ Grid candidates:
 - `{0.50, 0.25, 0.25}`
 - `{0.33, 0.33, 0.34}`
 
-Selection objective:
+### 5.4 Stored training artifacts
 
-- maximize validation macro F1
-- use validation accuracy as tie-breaker
+Saved to `model_profiles`:
 
-### 5.4 Metrics computed
+- `weightsJson`
+- `searchSummaryJson`
+- `metricsJson`
+- `learnedModelJson`
+- `featureImportanceJson` (data-driven from split gain / legacy coefficient fallback)
+- `monitoringJson` (calibration/backtest/drift/fairness snapshot)
 
-From validation/test predictions:
+## 6) Monitoring, calibration, drift, and fairness
 
-- Accuracy
-- Macro Precision
-- Macro Recall
-- Macro F1
-- ROC-AUC (binary framing: `HIGH` vs non-`HIGH`)
+### 6.1 Monitoring endpoint
 
-All are returned in percentage form.
+`GET /api/prediction/monitor?days=90`
 
-### 5.5 Cross-validation
+Returns:
 
-- 3-fold F1 estimate on training set (`crossValidationF1`).
-- If too few samples for folds, value is `0`.
+- calibration metrics
+- rolling backtest metrics (7/14/30 windows)
+- feature drift summary
+- fairness segment audit
 
-### 5.6 Model profile persistence
+### 6.2 Calibration metrics
 
-Per-user model profile (`model_profiles`) stores:
+- Brier score
+- Expected Calibration Error (ECE)
+- reliability bins (`predicted HIGH probability` vs `observed HIGH rate`)
 
-- selected weights
-- grid search summary
-- metrics JSON (validation/test/cv)
-- trained sample count
-- training timestamp
+Current implementation:
 
-Weights are normalized when read back to ensure sum is 1.
+- probability proxy = `clamp(riskScore / 100, 0, 1)`
+- positive class = `actualLabel === HIGH`
+- Brier score = average squared error between predicted probability and binary outcome
+- ECE uses `5` equal-width bins over `[0, 1]`
+- each bin stores:
+  - average predicted HIGH probability
+  - observed HIGH rate
+  - sample count
 
-### 5.7 Practical meaning of training in current system
+### 6.3 Drift metrics
 
-Training does **not** fit tree/SVM parameters. It tunes only ensemble weights over fixed deterministic scorers.
+Compares recent feature-store means vs baseline means and flags features with large relative shift.
 
-## 6) Internal post-model reasoning layers
+Current implementation:
 
-### 6.1 Risk pattern analysis
+- recent window = last `14` feature-store rows
+- baseline window = previous `30` rows before that
+- relative shift = `(recentMean - baselineMean) / max(abs(baselineMean), 1)`
+- drift flag threshold = `abs(shift) >= 0.35`
 
-`RiskAnalysisService` detects patterns from features with rule thresholds:
+### 6.4 Fairness audit (current segmentation)
 
-- high screen time: `avgScreenTimeMinutes >= 360`
-- frequent unlocks: `>= 100` (high severity from `>= 140`)
-- night usage: `avgNightUsageMinutes >= 90` or `lateNightUsageScore >= 65`
-- social dependency: `avgSocialMediaMinutes >= 180` or `socialMediaDependencyScore >= 70`
-- psychological stress: `>= 65`
-- sleep disruption: `>= 60`
+Audit now prioritizes demographic group segmentation across cohort rows in the monitoring window.
 
-It returns:
+Demographic axes used when enough coverage exists:
 
-- pattern list with severity and thresholds
-- combined insight text
-- model breakdown (`rf`, `et`, `svm`)
-- optional AI-generated narrative (Groq) with deterministic fallback
+- `gender`
+- `ageBand`
+- `region`
+- `educationLevel`
+- `occupation`
 
-### 6.2 Recommendation generation
+Eligibility rules:
 
-`RecommendationService` uses analysis + features and emits category-tagged actions.
+- minimum `8` samples per demographic segment
+- at least `2` eligible groups in an axis before that axis is included
+- if demographic coverage is insufficient, fallback behavioral segments are used (`weekday/weekend`, `high_stress/low_stress`)
 
-Rule examples:
+Reported:
 
-- screen cap recommendation at `avgScreenTimeMinutes >= 300`
-- night cutoff at `avgNightUsageMinutes >= 60`
-- social media block at `avgSocialMediaMinutes >= 150`
-- stress/sleep routine when stress or sleep disruption >= `60`
+- accuracy
+- false positive rate
+- false negative rate
+- predicted vs observed high-risk rates
+- max disparity gaps
 
-Optional AI recommendation line is prepended when Groq is configured.
+Current implementation treats `HIGH` as the positive class:
 
-### 6.3 Notification logic
+- `FPR = FP / (FP + TN)`
+- `FNR = FN / (FN + TP)`
+- `predictedHighRate = (TP + FP) / N`
+- `observedHighRate = (TP + FN) / N`
 
-`NotificationService` converts thresholds + risk state into alert candidates and deduplicates by `(user, date, type)`.
+### 6.5 Periodic refresh
 
-Trigger examples:
+Monitoring snapshots are refreshed automatically when stale during prediction runs and also during training.
 
-- screen time >= 300 (critical from >= 420)
-- night usage >= 90 (critical from >= 140)
-- unlock count >= 100 (critical from >= 150)
-- moderate/high risk prediction
-- AI insight message
+## 7) Ground-truth labeling API
 
-## 7) API surface for modeling lifecycle
+Base: `/api/ground-truth`
 
-- `POST /api/preprocessing/run?lookbackDays=30`
-- `GET /api/preprocessing/feature-store?limit=90`
-- `POST /api/prediction/run`
-- `POST /api/prediction/train`
-- `GET /api/prediction/latest`
-- `GET /api/prediction/history?limit=30`
-- `GET /api/risk-analysis/latest`
-- `GET /api/recommendation/latest`
-- `POST /api/notification/evaluate`
-- `GET /api/analytics/dashboard`
-- `GET /api/analytics/research-export?days=30`
+- `POST /label` -> upsert label for date
+- `GET /` -> list labels
+- `GET /latest` -> latest label
 
-## 8) End-to-end internal process flow
+## 8) Frontend model-ops workspace
 
-1. Mobile plugin collects daily usage snapshot from Android usage events.
-2. Frontend sync loop buffers records and uploads via `/usage/batch`.
-3. Survey responses are submitted by user and stored.
-4. Preprocessing merges latest survey + recent usage window.
-5. Features are engineered, selected, labeled, and persisted to feature store.
-6. Prediction scorer computes per-model outputs and weighted risk score.
-7. Risk-analysis layer converts scores into interpretable patterns and insights.
-8. Recommendation and notification modules generate actions and alerts.
-9. Optional training endpoint tunes ensemble weights from historical stored samples.
+New route: `/dashboard/analysis/model-ops`
 
-## 9) Current limitations and important caveats
+Capabilities:
 
-1. Model type: deterministic scoring system, not learned tree/SVM parameters.
-2. Label source: training uses internally derived labels, not external ground truth.
-3. Drift control: no explicit calibration or concept drift adaptation yet.
-4. Feature usage gap: rich telemetry is stored but not yet integrated into scoring.
-5. Temporal modeling: no sequence model over session timelines yet.
+- submit ground-truth labels
+- trigger retraining
+- inspect calibration/backtest/drift/fairness diagnostics
 
-## 10) Suggested future upgrades (if desired)
+Primary UI component:
 
-1. Introduce ground-truth labels (clinical/validated assessments) for supervised learning.
-2. Replace fixed scorers with trainable models and real feature importance from data.
-3. Use contextual telemetry (sleep/activity/connectivity/notification interaction) in features.
-4. Add calibration monitoring and periodic backtesting.
-5. Add fairness and bias audits across user segments.
+- `frontend/src/components/analysis/ModelOpsWorkspace.tsx`
+
+## 9) Current caveats
+
+1. Learned models are shallow tree ensembles, not deep neural networks.
+2. Demographic fairness depends on user-provided demographic coverage and sample balance.
+3. Context features depend on telemetry availability/quality on device.
+4. Ground-truth coverage quality directly affects supervised performance.

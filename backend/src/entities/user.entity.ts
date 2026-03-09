@@ -37,6 +37,9 @@ export class User {
   @Column({ type: 'text', nullable: true })
   behaviorSyncJson: string | null;
 
+  @Column({ type: 'text', nullable: true })
+  demographicsJson: string | null;
+
   @OneToOne(() => Permission, (permission) => permission.user, {
     cascade: true,
     eager: true,

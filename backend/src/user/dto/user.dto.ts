@@ -21,6 +21,10 @@ export class UpdateProfileDto {
   @IsString()
   @IsOptional()
   avatar?: string;
+
+  @IsOptional()
+  @IsObject()
+  demographics?: Record<string, unknown>;
 }
 
 export class ChangePasswordDto {

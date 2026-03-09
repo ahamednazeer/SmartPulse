@@ -31,6 +31,14 @@ export interface BehaviorSyncResponse extends BehaviorSyncState {
   updatedAt: string;
 }
 
+export interface UserDemographics {
+  ageBand: string | null;
+  gender: string | null;
+  region: string | null;
+  educationLevel: string | null;
+  occupation: string | null;
+}
+
 @Injectable()
 export class UserService {
   constructor(
@@ -65,6 +73,11 @@ export class UserService {
     if (dto.firstName !== undefined) user.firstName = dto.firstName;
     if (dto.lastName !== undefined) user.lastName = dto.lastName;
     if (dto.avatar !== undefined) user.avatar = dto.avatar;
+    if (dto.demographics !== undefined) {
+      user.demographicsJson = JSON.stringify(
+        this.sanitizeDemographics(dto.demographics),
+      );
+    }
 
     const saved = await this.userRepository.save(user);
     return this.sanitizeUser(saved);
@@ -344,6 +357,58 @@ export class UserService {
     };
   }
 
+  private defaultDemographics(): UserDemographics {
+    return {
+      ageBand: null,
+      gender: null,
+      region: null,
+      educationLevel: null,
+      occupation: null,
+    };
+  }
+
+  private parseDemographics(raw: string | null): UserDemographics {
+    if (!raw) {
+      return this.defaultDemographics();
+    }
+
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return this.sanitizeDemographics(parsed);
+    } catch {
+      return this.defaultDemographics();
+    }
+  }
+
+  private sanitizeDemographics(value: unknown): UserDemographics {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return this.defaultDemographics();
+    }
+
+    const candidate = value as Record<string, unknown>;
+    return {
+      ageBand: this.sanitizeDemographicValue(candidate.ageBand),
+      gender: this.sanitizeDemographicValue(candidate.gender),
+      region: this.sanitizeDemographicValue(candidate.region),
+      educationLevel: this.sanitizeDemographicValue(candidate.educationLevel),
+      occupation: this.sanitizeDemographicValue(candidate.occupation),
+    };
+  }
+
+  private sanitizeDemographicValue(value: unknown): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 32);
+    return normalized.length > 0 ? normalized : null;
+  }
+
   private sanitizeUser(user: User) {
     return {
       id: user.id,
@@ -353,6 +418,7 @@ export class UserService {
       avatar: user.avatar,
       role: user.role,
       permissionsConfigured: user.permissionsConfigured,
+      demographics: this.parseDemographics(user.demographicsJson),
       createdAt: user.createdAt,
       permission: user.permission
         ? {

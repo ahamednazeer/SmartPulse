@@ -4,6 +4,7 @@ import { PredictionResult } from '../entities/prediction-result.entity';
 import { User } from '../entities/user.entity';
 import { ModelProfile } from '../entities/model-profile.entity';
 import { GroundTruthLabel } from '../entities/ground-truth-label.entity';
+import { FeatureStoreRecord } from '../entities/feature-store-record.entity';
 import { PreprocessingModule } from '../preprocessing/preprocessing.module';
 import { PredictionService } from './prediction.service';
 import { PredictionController } from './prediction.controller';
@@ -15,6 +16,7 @@ import { PredictionController } from './prediction.controller';
       User,
       ModelProfile,
       GroundTruthLabel,
+      FeatureStoreRecord,
     ]),
     PreprocessingModule,
   ],

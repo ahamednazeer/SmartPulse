@@ -1,135 +1,121 @@
-# SmartPulse Module Architecture (Modules 2-10)
+# SmartPulse Module Architecture (Modules 2-11)
 
-This document maps the SmartPulse module design to implementation-level behavior and API surfaces.
+This document summarizes current SmartPulse behavior based on implementation.
 
 ## Module 2 - Psychological Survey Module
 
 ### Purpose
-Collect psychological indicators affecting smartphone addiction risk.
+Collect psychological risk indicators.
 
-### Data Collected
-- stress level
-- anxiety level
-- depression indicators
-- sleep quality and hours
-- social interaction
-- daily productivity
-- emotional dependence on phone
-- mood and optional notes
+### Data
+- stress, anxiety, depression
+- sleep quality and sleep hours
+- social interaction, productivity
+- phone dependence, mood, optional notes
 
-### Flow
-1. Survey initializes after account setup (`/survey`).
-2. User answers questionnaire fields.
-3. Backend validation enforces required ranges.
-4. Survey data is submitted to backend.
-5. Data is stored in `survey_responses`.
-
-### Output
-Per-user psychological profile dataset.
+### API
+- `POST /api/survey`
+- `GET /api/survey`
+- `GET /api/survey/latest`
 
 ## Module 3 - Smartphone Usage Monitoring Module
 
 ### Purpose
-Track behavior patterns automatically from Android telemetry.
+Collect behavioral telemetry from Android usage stats and events.
 
-### Data Collected
-- screen time
-- unlock frequency
-- app usage duration
-- time-of-day usage
-- night usage
-- social media usage
+### Data
+- screen time, unlock count, social minutes, night minutes
+- app usage and category timeline
+- session events and notification interaction
+- sleep/activity/battery/connectivity/location context
 
 ### Flow
-1. Usage tracking starts after permission approval.
-2. Native plugin collects foreground and unlock events.
-3. Raw events are aggregated into daily metrics.
-4. Data is buffered locally.
-5. Data uploads to backend every 6 hours (or on app resume).
+1. Native plugin captures usage snapshot.
+2. Frontend buffers record locally.
+3. Sync cycle uploads batch every 6 hours and on app resume.
 
-### Output
-Structured behavioral dataset in `usage_records`.
+### API
+- `POST /api/usage`
+- `POST /api/usage/batch`
+- `GET /api/usage`
+- `GET /api/usage/summary`
 
 ## Module 4 - Data Preprocessing Module
 
 ### Purpose
-Clean and normalize raw data before ML inference.
+Convert raw behavioral + survey data into ML-ready vectors.
 
-### Inputs
-- behavioral data (`usage_records`)
-- psychological data (`survey_responses`)
-
-### Flow
-1. Raw usage events are ingested from API-backed records.
-2. Validation removes unrealistic values (for example, `screenTime > 1440` minutes/day).
-3. Cleaning removes duplicate records by date and incomplete survey inputs.
-4. Metrics are normalized to consistent scales.
-5. Engineered scores are produced:
-   - addiction behavior score
-   - digital dependency score
-   - compulsive checking score
-   - late-night usage score
-   - night usage ratio
-   - social media intensity
-   - social media dependency score
-   - psychological stress score
-   - sleep disruption score
-6. Feature selection applies importance + variance checks.
-7. Final ML-ready rows are persisted to feature store.
+### Core behavior
+- dedup by date and strict validation bounds
+- survey fallback defaults when missing
+- normalization + engineered scores
+- contextual feature extraction from telemetry JSON
+- feature selection using essential/importance/variance rules
 
 ### Output
-ML-ready feature vector.
+- selected feature vector
+- quality metadata
+- derived addiction label (`LOW`/`MODERATE`/`HIGH`)
 
-### Implementation
-- Service: `backend/src/preprocessing/preprocessing.service.ts`
-- Entity: `backend/src/entities/feature-store-record.entity.ts`
+### Storage
+- `feature_store_records`
 
-## Module 5 - Machine Learning Prediction Module
+### API
+- `POST /api/preprocessing/run`
+- `GET /api/preprocessing/feature-store`
+
+## Module 5 - Prediction and Training Module
 
 ### Purpose
-Predict addiction risk using ensemble-style model scoring.
+Compute addiction risk and train user-specific scoring artifacts.
 
-### Flow
-1. Preprocessed features are generated.
-2. Training workflow supports:
-   - 70/15/15 train-validation-test split
-   - grid-search over ensemble weights
-   - macro precision/recall/F1 and ROC-AUC metrics
-3. Three model-style scores are computed at inference:
-   - Random Forest-like score
-   - Extra Trees-like score
-   - SVM-like score
-4. Weighted ensemble risk score (0-100) is computed.
-5. User is classified: `LOW` / `MODERATE` / `HIGH`.
-6. Result is persisted.
+### Inference
+- three scorer channels (`randomForest`, `extraTrees`, `svm`)
+- learned tree-ensemble scorers if available
+- deterministic fallback formulas otherwise
+- weighted ensemble risk score (`0..100`) and class
 
-### Output
-Addiction risk score and class in `prediction_results`.
+### Algorithms used
+- deterministic weighted feature engineering in preprocessing
+- three channel scorers:
+  - RandomForest-like weighted additive heuristic
+  - ExtraTrees-like heuristic with feature interaction term `screenTime x unlockCount`
+  - SVM-like linear margin heuristic
+- optional learned non-linear tree ensembles per channel using:
+  - recursive squared-error split optimization
+  - best-split or random-threshold split strategies
+  - bootstrap/subsample tree construction
+- ensemble weight grid search over fixed candidate weight sets
+- macro classification metrics and high-risk ROC-AUC
+
+### Training
+- sample assembly from feature store + prediction history
+- ground-truth override by date when present
+- 70/15/15 train-validation-test split
+- learned tree-ensemble fitting
+- ensemble weight grid search
+- metrics: accuracy, precision, recall, F1, ROC-AUC
+
+### Storage
+- `prediction_results`
+- `model_profiles` (weights, learned models, feature importance, monitoring)
 
 ### API
 - `POST /api/prediction/run`
 - `POST /api/prediction/train`
 - `GET /api/prediction/latest`
 - `GET /api/prediction/history?limit=30`
+- `GET /api/prediction/monitor?days=90`
 
 ## Module 6 - Risk Analysis Module
 
 ### Purpose
-Interpret model outputs into understandable risk insights.
+Explain model outputs as behavioral patterns.
 
-### Flow
-1. Latest prediction is loaded/generated.
-2. Behavioral pattern checks run:
-   - high screen time
-   - frequent unlocks
-   - night usage
-   - social media dependency
-   - stress/sleep disruption
-3. Groq AI insight generation runs when `GROQ_API_KEY` is configured.
-4. Human-readable insights are generated (Groq output with deterministic fallback).
-
-### Output
-Risk interpretation with patterns and metrics.
+### Behavior
+- threshold-based pattern detection
+- optional Groq-generated insight
+- deterministic fallback insight
 
 ### API
 - `GET /api/risk-analysis/latest`
@@ -137,25 +123,12 @@ Risk interpretation with patterns and metrics.
 ## Module 7 - Alert and Notification Module
 
 ### Purpose
-Trigger awareness alerts based on thresholds and risk.
+Generate actionable alerts from thresholds and risk levels.
 
-### Trigger Sources
-- daily screen-time threshold
-- unlock frequency threshold
-- night usage threshold
-- high addiction risk prediction
-
-### Flow
-1. Evaluate latest usage + risk.
-2. Generate alert candidates from thresholds + risk-state changes + AI insight text.
-3. De-duplicate per `date + type`.
-4. Persist alert history.
-
-### Output
-Notification history and unread counts.
-
-### Storage
-- `notification_history`
+### Behavior
+- threshold + risk-based candidate generation
+- de-duplication by `(date, type)`
+- unread tracking
 
 ### API
 - `POST /api/notification/evaluate`
@@ -166,67 +139,67 @@ Notification history and unread counts.
 ## Module 8 - Recommendation Engine Module
 
 ### Purpose
-Provide personalized behavior-reduction actions.
+Return intervention recommendations using risk + profile signals.
 
-### Flow
-1. Analyze latest risk + feature profile.
-2. Generate recommendations by category:
-   - screen-time reduction
-   - night-time cutoff
-   - social media scheduling
-   - wellbeing recovery routine
-3. Optionally enrich recommendations with Groq-generated personalized coaching line.
-4. Prioritize recommendations by risk level.
-
-### Output
-Personalized recommendation list.
+### Behavior
+- rule-based actions for screen/night/social/wellbeing
+- optional Groq personalized recommendation
 
 ### API
 - `GET /api/recommendation/latest`
 
 ## Module 9 - Data Storage Module
 
-### Stored Data
-- user profile and permission state
-- psychological surveys
-- behavioral usage metrics
-- prediction results
-- notification history
-
-### Primary Tables
+### Primary tables
 - `users`
 - `permissions`
 - `survey_responses`
 - `usage_records`
+- `feature_store_records`
 - `prediction_results`
+- `model_profiles`
+- `ground_truth_labels`
 - `notification_history`
 
-## Module 10 - Analytics & Reporting Module
+## Module 10 - Analytics and Reporting Module
 
 ### Purpose
-Provide dashboards and exportable insight datasets.
-
-### Flow
-1. Build dashboard aggregates and trends.
-2. Return usage and risk trend arrays.
-3. Generate anonymized research export bundle.
-
-### Output
-Dashboard analytics and anonymized export payload.
+Power dashboard trends and research export.
 
 ### API
 - `GET /api/analytics/dashboard`
 - `GET /api/analytics/research-export?days=30`
 
-## End-to-End System Flow
+## Module 11 - Ground-Truth and Model Governance Module
 
-1. User registers/login in mobile app.
-2. User completes psychological survey.
-3. App collects smartphone usage data.
-4. Usage data syncs to backend periodically.
-5. Preprocessing builds integrated feature vectors.
-6. Prediction engine computes addiction risk.
-7. Risk analysis explains key behavior patterns.
-8. Alerts and recommendations are generated.
-9. Dashboard surfaces trends and risk updates.
-10. Data is retained for analytics and future learning.
+### Purpose
+Capture validated labels and expose model reliability diagnostics.
+
+### Behavior
+- upsert/list/latest ground-truth labels
+- monitoring output with:
+  - calibration
+  - rolling backtest
+  - drift flags
+  - fairness segment audit
+
+### Algorithms used
+- calibration: Brier score + Expected Calibration Error with 5 bins
+- drift: relative mean shift between recent and baseline feature windows
+- fairness: demographic segment-wise confusion-matrix audit using `HIGH` as positive class, with behavioral fallback when demographic coverage is insufficient
+
+### API
+- `POST /api/ground-truth/label`
+- `GET /api/ground-truth`
+- `GET /api/ground-truth/latest`
+
+## End-to-end flow
+
+1. User completes survey and grants permissions.
+2. App collects and syncs usage telemetry.
+3. Preprocessing creates selected feature vectors.
+4. Prediction module computes risk and persists outputs.
+5. Risk analysis, recommendations, and notifications are produced.
+6. Ground-truth labels can be submitted for supervised correction.
+7. Training updates learned scorer models and weights.
+8. Monitoring reports calibration/backtest/drift/fairness health.

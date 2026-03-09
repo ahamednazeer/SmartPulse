@@ -1,10 +1,11 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { MoreThanOrEqual, Repository } from 'typeorm';
 import { User } from '../entities/user.entity';
 import { PredictionResult } from '../entities/prediction-result.entity';
 import { ModelProfile } from '../entities/model-profile.entity';
 import { GroundTruthLabel } from '../entities/ground-truth-label.entity';
+import { FeatureStoreRecord } from '../entities/feature-store-record.entity';
 import {
   PreprocessingService,
   PreprocessedFeatureSet,
@@ -86,6 +87,7 @@ export interface PredictionTrainingSummary {
 }
 
 interface LearnedLinearModel {
+  modelType: 'LINEAR';
   featureKeys: string[];
   meanByFeature: Record<string, number>;
   stdByFeature: Record<string, number>;
@@ -93,10 +95,33 @@ interface LearnedLinearModel {
   intercept: number;
 }
 
+interface LearnedTreeNode {
+  splitFeature: string | null;
+  threshold: number | null;
+  value: number;
+  gain: number;
+  sampleCount: number;
+  left: LearnedTreeNode | null;
+  right: LearnedTreeNode | null;
+}
+
+interface LearnedTreeEnsembleModel {
+  modelType: 'TREE_ENSEMBLE';
+  featureKeys: string[];
+  trees: LearnedTreeNode[];
+  treeWeights: number[];
+  maxDepth: number;
+  minSamplesLeaf: number;
+  splitStrategy: 'BEST' | 'RANDOM';
+  featureImportance: Record<string, number>;
+}
+
+type LearnedScorerModel = LearnedLinearModel | LearnedTreeEnsembleModel;
+
 interface LearnedScorers {
-  randomForest: LearnedLinearModel | null;
-  extraTrees: LearnedLinearModel | null;
-  svm: LearnedLinearModel | null;
+  randomForest: LearnedScorerModel | null;
+  extraTrees: LearnedScorerModel | null;
+  svm: LearnedScorerModel | null;
 }
 
 interface CalibrationBinSummary {
@@ -115,6 +140,23 @@ interface SegmentAuditSummary {
   falseNegativeRate: number;
   predictedHighRate: number;
   observedHighRate: number;
+}
+
+interface UserDemographicsSnapshot {
+  ageBand: string | null;
+  gender: string | null;
+  region: string | null;
+  educationLevel: string | null;
+  occupation: string | null;
+}
+
+interface FairnessAuditRow {
+  date: string;
+  predictedLabel: RiskLevel;
+  actualLabel: RiskLevel;
+  riskScore: number;
+  featureVector: Record<string, number>;
+  demographics: UserDemographicsSnapshot;
 }
 
 export interface ModelMonitoringSummary {
@@ -176,6 +218,8 @@ export class PredictionService {
     private readonly modelProfileRepository: Repository<ModelProfile>,
     @InjectRepository(GroundTruthLabel)
     private readonly groundTruthRepository: Repository<GroundTruthLabel>,
+    @InjectRepository(FeatureStoreRecord)
+    private readonly featureStoreRepository: Repository<FeatureStoreRecord>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly preprocessingService: PreprocessingService,
@@ -286,7 +330,7 @@ export class PredictionService {
     const learnedScorers = this.trainLearnedScorers(trainSet);
     if (!learnedScorers) {
       notes.push(
-        'Trainable linear scorers were not produced (not enough stable feature samples). Falling back to deterministic scoring rules.',
+        'Trainable tree-ensemble scorers were not produced (not enough stable feature samples). Falling back to deterministic scoring rules.',
       );
     }
 
@@ -766,9 +810,9 @@ export class PredictionService {
       }
       const obj = parsed as Record<string, unknown>;
       return {
-        randomForest: this.parseLearnedLinearModel(obj.randomForest),
-        extraTrees: this.parseLearnedLinearModel(obj.extraTrees),
-        svm: this.parseLearnedLinearModel(obj.svm),
+        randomForest: this.parseLearnedScorerModel(obj.randomForest),
+        extraTrees: this.parseLearnedScorerModel(obj.extraTrees),
+        svm: this.parseLearnedScorerModel(obj.svm),
       };
     } catch {
       return null;
@@ -777,7 +821,7 @@ export class PredictionService {
 
   private scoreRandomForestLike(
     features: PreprocessedFeatureSet,
-    learnedModel: LearnedLinearModel | null = null,
+    learnedModel: LearnedScorerModel | null = null,
   ): number {
     if (learnedModel) {
       return this.scoreUsingLearnedModel(features, learnedModel);
@@ -797,7 +841,7 @@ export class PredictionService {
 
   private scoreExtraTreesLike(
     features: PreprocessedFeatureSet,
-    learnedModel: LearnedLinearModel | null = null,
+    learnedModel: LearnedScorerModel | null = null,
   ): number {
     if (learnedModel) {
       return this.scoreUsingLearnedModel(features, learnedModel);
@@ -824,7 +868,7 @@ export class PredictionService {
 
   private scoreSvmLike(
     features: PreprocessedFeatureSet,
-    learnedModel: LearnedLinearModel | null = null,
+    learnedModel: LearnedScorerModel | null = null,
   ): number {
     if (learnedModel) {
       return this.scoreUsingLearnedModel(features, learnedModel);
@@ -844,7 +888,7 @@ export class PredictionService {
 
   private scoreRandomForestLikeFromMap(
     featureMap: Record<string, number>,
-    learnedModel: LearnedLinearModel | null = null,
+    learnedModel: LearnedScorerModel | null = null,
   ): number {
     return this.scoreRandomForestLike(
       this.mapToFeatureSet(featureMap),
@@ -854,7 +898,7 @@ export class PredictionService {
 
   private scoreExtraTreesLikeFromMap(
     featureMap: Record<string, number>,
-    learnedModel: LearnedLinearModel | null = null,
+    learnedModel: LearnedScorerModel | null = null,
   ): number {
     return this.scoreExtraTreesLike(
       this.mapToFeatureSet(featureMap),
@@ -864,7 +908,7 @@ export class PredictionService {
 
   private scoreSvmLikeFromMap(
     featureMap: Record<string, number>,
-    learnedModel: LearnedLinearModel | null = null,
+    learnedModel: LearnedScorerModel | null = null,
   ): number {
     return this.scoreSvmLike(this.mapToFeatureSet(featureMap), learnedModel);
   }
@@ -1053,6 +1097,19 @@ export class PredictionService {
 
   private scoreUsingLearnedModel(
     features: PreprocessedFeatureSet,
+    learnedModel: LearnedScorerModel,
+  ): number {
+    if (this.isTreeEnsembleModel(learnedModel)) {
+      return this.scoreUsingTreeEnsembleModel(
+        this.featureSetToMap(features),
+        learnedModel,
+      );
+    }
+    return this.scoreUsingLearnedLinearModel(features, learnedModel);
+  }
+
+  private scoreUsingLearnedLinearModel(
+    features: PreprocessedFeatureSet,
     learnedModel: LearnedLinearModel,
   ): number {
     const featureMap = this.featureSetToMap(features);
@@ -1067,6 +1124,48 @@ export class PredictionService {
     });
 
     return this.bound0to100(score);
+  }
+
+  private scoreUsingTreeEnsembleModel(
+    featureMap: Record<string, number>,
+    learnedModel: LearnedTreeEnsembleModel,
+  ): number {
+    if (learnedModel.trees.length === 0) {
+      return 0;
+    }
+
+    let weightedTotal = 0;
+    let weightSum = 0;
+    learnedModel.trees.forEach((tree, index) => {
+      const weight = learnedModel.treeWeights[index] ?? 1;
+      weightedTotal += this.scoreTreeNode(tree, featureMap) * weight;
+      weightSum += weight;
+    });
+
+    if (weightSum <= 0) {
+      return 0;
+    }
+    return this.bound0to100(weightedTotal / weightSum);
+  }
+
+  private scoreTreeNode(
+    node: LearnedTreeNode,
+    featureMap: Record<string, number>,
+  ): number {
+    if (
+      !node.splitFeature ||
+      node.threshold === null ||
+      node.left === null ||
+      node.right === null
+    ) {
+      return node.value;
+    }
+
+    const featureValue = this.featureValue(featureMap, node.splitFeature);
+    if (featureValue <= node.threshold) {
+      return this.scoreTreeNode(node.left, featureMap);
+    }
+    return this.scoreTreeNode(node.right, featureMap);
   }
 
   private featureSetToMap(
@@ -1084,7 +1183,7 @@ export class PredictionService {
   private trainLearnedScorers(
     trainSet: TrainingSample[],
   ): LearnedScorers | null {
-    if (trainSet.length < 6) {
+    if (trainSet.length < 12) {
       return null;
     }
 
@@ -1128,20 +1227,32 @@ export class PredictionService {
     const etKeys = this.selectFeatureKeys(stableKeys, etPreferred);
     const svmKeys = this.selectFeatureKeys(stableKeys, svmPreferred);
 
-    const randomForest = this.trainLinearRegressor(trainSet, rfKeys, {
-      learningRate: 0.03,
-      iterations: 450,
-      l2: 0.03,
+    const randomForest = this.trainTreeEnsembleRegressor(trainSet, rfKeys, {
+      treeCount: 29,
+      maxDepth: 5,
+      minSamplesLeaf: 3,
+      featureSubsampleRatio: 0.65,
+      splitCandidatesPerFeature: 10,
+      splitStrategy: 'BEST',
+      bootstrap: true,
     });
-    const extraTrees = this.trainLinearRegressor(trainSet, etKeys, {
-      learningRate: 0.025,
-      iterations: 520,
-      l2: 0.02,
+    const extraTrees = this.trainTreeEnsembleRegressor(trainSet, etKeys, {
+      treeCount: 35,
+      maxDepth: 5,
+      minSamplesLeaf: 2,
+      featureSubsampleRatio: 0.8,
+      splitCandidatesPerFeature: 14,
+      splitStrategy: 'RANDOM',
+      bootstrap: false,
     });
-    const svm = this.trainLinearRegressor(trainSet, svmKeys, {
-      learningRate: 0.02,
-      iterations: 480,
-      l2: 0.05,
+    const svm = this.trainTreeEnsembleRegressor(trainSet, svmKeys, {
+      treeCount: 21,
+      maxDepth: 4,
+      minSamplesLeaf: 3,
+      featureSubsampleRatio: 0.55,
+      splitCandidatesPerFeature: 8,
+      splitStrategy: 'BEST',
+      bootstrap: true,
     });
 
     if (!randomForest && !extraTrees && !svm) {
@@ -1192,87 +1303,369 @@ export class PredictionService {
     return stableKeys;
   }
 
-  private trainLinearRegressor(
+  private trainTreeEnsembleRegressor(
     samples: TrainingSample[],
     featureKeys: string[],
     options: {
-      learningRate: number;
-      iterations: number;
-      l2: number;
+      treeCount: number;
+      maxDepth: number;
+      minSamplesLeaf: number;
+      featureSubsampleRatio: number;
+      splitCandidatesPerFeature: number;
+      splitStrategy: 'BEST' | 'RANDOM';
+      bootstrap: boolean;
     },
-  ): LearnedLinearModel | null {
-    if (samples.length === 0 || featureKeys.length === 0) {
+  ): LearnedTreeEnsembleModel | null {
+    if (samples.length < 6 || featureKeys.length < 2) {
       return null;
     }
 
-    const meanByFeature: Record<string, number> = {};
-    const stdByFeature: Record<string, number> = {};
-
-    featureKeys.forEach((key) => {
-      const values = samples.map((sample) => this.featureValue(sample.featureVector, key));
-      const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-      const variance =
-        values.reduce((sum, value) => {
-          const diff = value - mean;
-          return sum + diff * diff;
-        }, 0) / values.length;
-      meanByFeature[key] = mean;
-      stdByFeature[key] = Math.max(Math.sqrt(variance), 1);
-    });
-
-    const normalizedRows = samples.map((sample) =>
-      featureKeys.map((key) => {
-        const raw = this.featureValue(sample.featureVector, key);
-        return (raw - meanByFeature[key]) / stdByFeature[key];
-      }),
+    const dataRows = samples.map((sample) => ({
+      featureVector: sample.featureVector,
+      target: this.labelToRegressionTarget(sample.label),
+    }));
+    const rng = this.createSeededRng(
+      this.buildTrainingSeed(samples, featureKeys, options.splitStrategy),
     );
-    const targets = samples.map((sample) => this.labelToRegressionTarget(sample.label));
 
-    const coeff = new Array(featureKeys.length).fill(0);
-    let intercept = targets.reduce((sum, value) => sum + value, 0) / targets.length;
+    const trees: LearnedTreeNode[] = [];
+    const treeWeights: number[] = [];
+    const rawImportance: Record<string, number> = {};
 
-    for (let step = 0; step < options.iterations; step += 1) {
-      const grad = new Array(featureKeys.length).fill(0);
-      let gradIntercept = 0;
-
-      for (let i = 0; i < normalizedRows.length; i += 1) {
-        const row = normalizedRows[i];
-        let prediction = intercept;
-        for (let j = 0; j < row.length; j += 1) {
-          prediction += coeff[j] * row[j];
-        }
-
-        const error = prediction - targets[i];
-        gradIntercept += error;
-        for (let j = 0; j < row.length; j += 1) {
-          grad[j] += error * row[j];
-        }
+    for (let treeIndex = 0; treeIndex < options.treeCount; treeIndex += 1) {
+      const trainingRows = options.bootstrap
+        ? this.bootstrapRows(dataRows, rng)
+        : this.subsampleRows(
+            dataRows,
+            rng,
+            Math.max(0.7, options.featureSubsampleRatio),
+          );
+      if (trainingRows.length < Math.max(6, options.minSamplesLeaf * 2)) {
+        continue;
       }
 
-      const size = normalizedRows.length;
-      for (let j = 0; j < coeff.length; j += 1) {
-        const regularized = grad[j] / size + coeff[j] * options.l2;
-        coeff[j] -= options.learningRate * regularized;
+      const tree = this.buildRegressionTree(
+        trainingRows,
+        featureKeys,
+        options,
+        rng,
+        0,
+      );
+      if (!tree) {
+        continue;
       }
-      intercept -= options.learningRate * (gradIntercept / size);
+
+      this.collectTreeFeatureImportance(tree, rawImportance);
+      trees.push(tree);
+      treeWeights.push(1);
     }
 
-    const coefficients: Record<string, number> = {};
-    featureKeys.forEach((key, index) => {
-      const value = coeff[index];
-      coefficients[key] = Number.isFinite(value) ? this.round6(value) : 0;
-    });
-
-    if (!Number.isFinite(intercept)) {
+    if (trees.length === 0) {
       return null;
     }
 
     return {
+      modelType: 'TREE_ENSEMBLE',
       featureKeys,
-      meanByFeature,
-      stdByFeature,
-      coefficients,
-      intercept: this.round6(intercept),
+      trees,
+      treeWeights,
+      maxDepth: options.maxDepth,
+      minSamplesLeaf: options.minSamplesLeaf,
+      splitStrategy: options.splitStrategy,
+      featureImportance: this.normalizeImportance(rawImportance),
+    };
+  }
+
+  private buildRegressionTree(
+    rows: Array<{ featureVector: Record<string, number>; target: number }>,
+    featureKeys: string[],
+    options: {
+      treeCount: number;
+      maxDepth: number;
+      minSamplesLeaf: number;
+      featureSubsampleRatio: number;
+      splitCandidatesPerFeature: number;
+      splitStrategy: 'BEST' | 'RANDOM';
+      bootstrap: boolean;
+    },
+    rng: () => number,
+    depth: number,
+  ): LearnedTreeNode | null {
+    if (rows.length === 0) {
+      return null;
+    }
+
+    const currentValue = this.average(rows.map((item) => item.target));
+    const minBranchSize = Math.max(2, options.minSamplesLeaf);
+    if (depth >= options.maxDepth || rows.length < minBranchSize * 2) {
+      return {
+        splitFeature: null,
+        threshold: null,
+        value: this.round4(currentValue),
+        gain: 0,
+        sampleCount: rows.length,
+        left: null,
+        right: null,
+      };
+    }
+
+    const candidateFeatureCount = this.clamp(
+      Math.floor(featureKeys.length * options.featureSubsampleRatio),
+      2,
+      featureKeys.length,
+    );
+    const candidateFeatures = this.pickRandomSubset(
+      featureKeys,
+      candidateFeatureCount,
+      rng,
+    );
+
+    const totalError = this.squaredError(rows.map((item) => item.target));
+    type CandidateSplit = {
+      feature: string;
+      threshold: number;
+      gain: number;
+      left: Array<{ featureVector: Record<string, number>; target: number }>;
+      right: Array<{ featureVector: Record<string, number>; target: number }>;
+    };
+    let bestSplit: CandidateSplit | null = null;
+
+    for (const feature of candidateFeatures) {
+      const values = rows.map((row) => this.featureValue(row.featureVector, feature));
+      const thresholds = this.generateThresholdCandidates(
+        values,
+        options.splitCandidatesPerFeature,
+        options.splitStrategy,
+        rng,
+      );
+      for (const threshold of thresholds) {
+        const left = rows.filter(
+          (row) => this.featureValue(row.featureVector, feature) <= threshold,
+        );
+        const right = rows.filter(
+          (row) => this.featureValue(row.featureVector, feature) > threshold,
+        );
+        if (left.length < minBranchSize || right.length < minBranchSize) {
+          continue;
+        }
+
+        const childError =
+          this.squaredError(left.map((item) => item.target)) +
+          this.squaredError(right.map((item) => item.target));
+        const gain = totalError - childError;
+        if (gain <= 0) {
+          continue;
+        }
+
+        if (!bestSplit || gain > bestSplit.gain) {
+          bestSplit = {
+            feature,
+            threshold,
+            gain,
+            left,
+            right,
+          };
+        }
+      }
+    }
+
+    if (!bestSplit || bestSplit.gain < 1e-3) {
+      return {
+        splitFeature: null,
+        threshold: null,
+        value: this.round4(currentValue),
+        gain: 0,
+        sampleCount: rows.length,
+        left: null,
+        right: null,
+      };
+    }
+
+    const leftNode = this.buildRegressionTree(
+      bestSplit.left,
+      featureKeys,
+      options,
+      rng,
+      depth + 1,
+    );
+    const rightNode = this.buildRegressionTree(
+      bestSplit.right,
+      featureKeys,
+      options,
+      rng,
+      depth + 1,
+    );
+
+    if (!leftNode || !rightNode) {
+      return {
+        splitFeature: null,
+        threshold: null,
+        value: this.round4(currentValue),
+        gain: 0,
+        sampleCount: rows.length,
+        left: null,
+        right: null,
+      };
+    }
+
+    return {
+      splitFeature: bestSplit.feature,
+      threshold: this.round4(bestSplit.threshold),
+      value: this.round4(currentValue),
+      gain: this.round4(bestSplit.gain),
+      sampleCount: rows.length,
+      left: leftNode,
+      right: rightNode,
+    };
+  }
+
+  private generateThresholdCandidates(
+    values: number[],
+    maxCandidates: number,
+    strategy: 'BEST' | 'RANDOM',
+    rng: () => number,
+  ): number[] {
+    const sorted = [...values]
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => a - b);
+    if (sorted.length < 2) {
+      return [];
+    }
+
+    const min = sorted[0];
+    const max = sorted[sorted.length - 1];
+    if (max <= min) {
+      return [];
+    }
+
+    if (strategy === 'RANDOM') {
+      const samples = new Set<number>();
+      const count = Math.max(2, Math.min(maxCandidates, sorted.length - 1));
+      while (samples.size < count) {
+        const threshold = min + (max - min) * rng();
+        samples.add(this.round4(threshold));
+      }
+      return Array.from(samples.values());
+    }
+
+    const candidates = new Set<number>();
+    const step = Math.max(1, Math.floor(sorted.length / (maxCandidates + 1)));
+    for (let i = step; i < sorted.length; i += step) {
+      const prev = sorted[i - 1];
+      const next = sorted[i];
+      if (!Number.isFinite(prev) || !Number.isFinite(next) || next <= prev) {
+        continue;
+      }
+      candidates.add(this.round4((prev + next) / 2));
+      if (candidates.size >= maxCandidates) {
+        break;
+      }
+    }
+
+    return Array.from(candidates.values());
+  }
+
+  private bootstrapRows<T>(rows: T[], rng: () => number): T[] {
+    if (rows.length === 0) {
+      return [];
+    }
+    return Array.from({ length: rows.length }, () => {
+      const index = Math.floor(rng() * rows.length);
+      return rows[index];
+    });
+  }
+
+  private subsampleRows<T>(rows: T[], rng: () => number, ratio: number): T[] {
+    if (rows.length === 0) {
+      return [];
+    }
+    const target = this.clamp(Math.floor(rows.length * ratio), 1, rows.length);
+    const selected = [...rows];
+    for (let i = selected.length - 1; i > 0; i -= 1) {
+      const swap = Math.floor(rng() * (i + 1));
+      [selected[i], selected[swap]] = [selected[swap], selected[i]];
+    }
+    return selected.slice(0, target);
+  }
+
+  private pickRandomSubset<T>(items: T[], count: number, rng: () => number): T[] {
+    if (count >= items.length) {
+      return [...items];
+    }
+    const cloned = [...items];
+    for (let i = cloned.length - 1; i > 0; i -= 1) {
+      const swap = Math.floor(rng() * (i + 1));
+      [cloned[i], cloned[swap]] = [cloned[swap], cloned[i]];
+    }
+    return cloned.slice(0, count);
+  }
+
+  private squaredError(values: number[]): number {
+    if (values.length === 0) {
+      return 0;
+    }
+    const mean = this.average(values);
+    return values.reduce((sum, value) => {
+      const diff = value - mean;
+      return sum + diff * diff;
+    }, 0);
+  }
+
+  private collectTreeFeatureImportance(
+    node: LearnedTreeNode | null,
+    output: Record<string, number>,
+  ): void {
+    if (!node) {
+      return;
+    }
+
+    if (node.splitFeature && node.gain > 0) {
+      output[node.splitFeature] = (output[node.splitFeature] ?? 0) + node.gain;
+    }
+    this.collectTreeFeatureImportance(node.left, output);
+    this.collectTreeFeatureImportance(node.right, output);
+  }
+
+  private normalizeImportance(values: Record<string, number>): Record<string, number> {
+    const entries = Object.entries(values);
+    if (entries.length === 0) {
+      return {};
+    }
+    const max = Math.max(...entries.map(([, value]) => value), 1e-6);
+    const output: Record<string, number> = {};
+    entries
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([key, value]) => {
+        output[key] = this.round3(value / max);
+      });
+    return output;
+  }
+
+  private buildTrainingSeed(
+    samples: TrainingSample[],
+    featureKeys: string[],
+    strategy: 'BEST' | 'RANDOM',
+  ): number {
+    const source = `${samples.length}|${featureKeys.join(',')}|${strategy}|${samples
+      .slice(0, 10)
+      .map((sample) => `${sample.date}:${sample.label}`)
+      .join('|')}`;
+    let hash = 2166136261;
+    for (let i = 0; i < source.length; i += 1) {
+      hash ^= source.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return Math.abs(hash) + 1;
+  }
+
+  private createSeededRng(seed: number): () => number {
+    let state = seed % 2147483647;
+    if (state <= 0) {
+      state += 2147483646;
+    }
+    return () => {
+      state = (state * 16807) % 2147483647;
+      return (state - 1) / 2147483646;
     };
   }
 
@@ -1295,15 +1688,22 @@ export class PredictionService {
     }
 
     const aggregate: Record<string, number> = {};
-    const addWeights = (
-      model: LearnedLinearModel | null,
-      modelWeight: number,
-    ) => {
+    const addWeights = (model: LearnedScorerModel | null, modelWeight: number) => {
       if (!model) {
         return;
       }
-      Object.entries(model.coefficients).forEach(([key, value]) => {
-        const contribution = Math.abs(value) * modelWeight;
+      const source = this.isTreeEnsembleModel(model)
+        ? model.featureImportance
+        : this.normalizeImportance(
+            Object.fromEntries(
+              Object.entries(model.coefficients).map(([key, value]) => [
+                key,
+                Math.abs(value),
+              ]),
+            ),
+          );
+      Object.entries(source).forEach(([key, value]) => {
+        const contribution = value * modelWeight;
         aggregate[key] = (aggregate[key] ?? 0) + contribution;
       });
     };
@@ -1325,6 +1725,14 @@ export class PredictionService {
         normalized[key] = this.round3(value / max);
       });
     return normalized;
+  }
+
+  private parseLearnedScorerModel(value: unknown): LearnedScorerModel | null {
+    const tree = this.parseLearnedTreeEnsembleModel(value);
+    if (tree) {
+      return tree;
+    }
+    return this.parseLearnedLinearModel(value);
   }
 
   private parseLearnedLinearModel(value: unknown): LearnedLinearModel | null {
@@ -1352,12 +1760,111 @@ export class PredictionService {
     }
 
     return {
+      modelType: 'LINEAR',
       featureKeys,
       meanByFeature,
       stdByFeature,
       coefficients,
       intercept,
     };
+  }
+
+  private parseLearnedTreeEnsembleModel(
+    value: unknown,
+  ): LearnedTreeEnsembleModel | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    const obj = value as Record<string, unknown>;
+    if (obj.modelType !== 'TREE_ENSEMBLE') {
+      return null;
+    }
+
+    const featureKeys = Array.isArray(obj.featureKeys)
+      ? obj.featureKeys.filter((item): item is string => typeof item === 'string')
+      : [];
+    const trees = Array.isArray(obj.trees)
+      ? obj.trees
+          .map((item) => this.parseTreeNode(item))
+          .filter((item): item is LearnedTreeNode => item !== null)
+      : [];
+    const treeWeights = Array.isArray(obj.treeWeights)
+      ? obj.treeWeights
+          .map((item) => (typeof item === 'number' && Number.isFinite(item) ? item : 0))
+          .slice(0, trees.length)
+      : [];
+
+    if (featureKeys.length === 0 || trees.length === 0) {
+      return null;
+    }
+    while (treeWeights.length < trees.length) {
+      treeWeights.push(1);
+    }
+
+    const maxDepth =
+      typeof obj.maxDepth === 'number' && Number.isFinite(obj.maxDepth)
+        ? Math.max(1, Math.floor(obj.maxDepth))
+        : 5;
+    const minSamplesLeaf =
+      typeof obj.minSamplesLeaf === 'number' && Number.isFinite(obj.minSamplesLeaf)
+        ? Math.max(1, Math.floor(obj.minSamplesLeaf))
+        : 2;
+    const splitStrategy = obj.splitStrategy === 'RANDOM' ? 'RANDOM' : 'BEST';
+    const featureImportance = this.parseNumberMapFromUnknown(obj.featureImportance);
+
+    return {
+      modelType: 'TREE_ENSEMBLE',
+      featureKeys,
+      trees,
+      treeWeights,
+      maxDepth,
+      minSamplesLeaf,
+      splitStrategy,
+      featureImportance,
+    };
+  }
+
+  private parseTreeNode(value: unknown): LearnedTreeNode | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    const obj = value as Record<string, unknown>;
+    const nodeValue =
+      typeof obj.value === 'number' && Number.isFinite(obj.value) ? obj.value : null;
+    if (nodeValue === null) {
+      return null;
+    }
+
+    const splitFeature =
+      typeof obj.splitFeature === 'string' ? obj.splitFeature : null;
+    const threshold =
+      typeof obj.threshold === 'number' && Number.isFinite(obj.threshold)
+        ? obj.threshold
+        : null;
+    const gain =
+      typeof obj.gain === 'number' && Number.isFinite(obj.gain) ? obj.gain : 0;
+    const sampleCount =
+      typeof obj.sampleCount === 'number' && Number.isFinite(obj.sampleCount)
+        ? Math.max(1, Math.floor(obj.sampleCount))
+        : 1;
+    const left = obj.left === null ? null : this.parseTreeNode(obj.left);
+    const right = obj.right === null ? null : this.parseTreeNode(obj.right);
+
+    return {
+      splitFeature,
+      threshold,
+      value: nodeValue,
+      gain,
+      sampleCount,
+      left,
+      right,
+    };
+  }
+
+  private isTreeEnsembleModel(
+    model: LearnedScorerModel,
+  ): model is LearnedTreeEnsembleModel {
+    return model.modelType === 'TREE_ENSEMBLE';
   }
 
   private parseNumberMapFromUnknown(value: unknown): Record<string, number> {
@@ -1427,22 +1934,27 @@ export class PredictionService {
     userId: string,
     evaluationWindowDays: number,
   ): Promise<ModelMonitoringSummary> {
-    const [predictions, featureStoreRecords, validatedLabels] = await Promise.all([
-      this.predictionRepository.find({
-        where: { user: { id: userId } },
-        order: { date: 'DESC' },
-        take: evaluationWindowDays,
-      }),
-      this.preprocessingService.getFeatureStoreRecords(
-        userId,
-        Math.max(evaluationWindowDays, 120),
-      ),
-      this.groundTruthRepository.find({
-        where: { user: { id: userId } },
-        order: { date: 'DESC' },
-        take: Math.max(evaluationWindowDays, 120),
-      }),
-    ]);
+    const [predictions, featureStoreRecords, validatedLabels, user] =
+      await Promise.all([
+        this.predictionRepository.find({
+          where: { user: { id: userId } },
+          order: { date: 'DESC' },
+          take: evaluationWindowDays,
+        }),
+        this.preprocessingService.getFeatureStoreRecords(
+          userId,
+          Math.max(evaluationWindowDays, 120),
+        ),
+        this.groundTruthRepository.find({
+          where: { user: { id: userId } },
+          order: { date: 'DESC' },
+          take: Math.max(evaluationWindowDays, 120),
+        }),
+        this.userRepository.findOne({
+          where: { id: userId },
+          select: ['id', 'demographicsJson'],
+        }),
+      ]);
 
     const groundTruthByDate = new Map<string, RiskLevel>();
     validatedLabels.forEach((item) => {
@@ -1504,7 +2016,20 @@ export class PredictionService {
       };
     });
     const drift = this.computeDriftSummary(featureStoreRecords);
-    const fairnessAudit = this.computeFairnessAudit(evaluationRows);
+    const fairnessRows = await this.loadDemographicFairnessRows(
+      evaluationWindowDays,
+    );
+    const fallbackDemographics = this.parseDemographicsJson(
+      user?.demographicsJson ?? null,
+    );
+    const fairnessAudit = this.computeFairnessAudit(
+      fairnessRows.length > 0
+        ? fairnessRows
+        : evaluationRows.map((row) => ({
+            ...row,
+            demographics: fallbackDemographics,
+          })),
+    );
 
     return {
       generatedAt: new Date().toISOString(),
@@ -1636,45 +2161,143 @@ export class PredictionService {
     };
   }
 
-  private computeFairnessAudit(
-    rows: Array<{
-      date: string;
-      predictedLabel: RiskLevel;
-      actualLabel: RiskLevel;
-      riskScore: number;
-      featureVector: Record<string, number>;
-    }>,
-  ): ModelMonitoringSummary['fairnessAudit'] {
-    const segments: SegmentAuditSummary[] = [];
+  private async loadDemographicFairnessRows(
+    evaluationWindowDays: number,
+  ): Promise<FairnessAuditRow[]> {
+    const cutoffDate = this.isoDateDaysAgo(evaluationWindowDays);
+    const [predictions, groundTruthLabels, featureStoreRows] = await Promise.all([
+      this.predictionRepository.find({
+        where: { date: MoreThanOrEqual(cutoffDate) },
+        relations: ['user'],
+        order: { date: 'DESC' },
+        take: 5000,
+      }),
+      this.groundTruthRepository.find({
+        where: { date: MoreThanOrEqual(cutoffDate) },
+        relations: ['user'],
+        order: { date: 'DESC' },
+        take: 5000,
+      }),
+      this.featureStoreRepository.find({
+        where: { date: MoreThanOrEqual(cutoffDate) },
+        relations: ['user'],
+        order: { date: 'DESC' },
+        take: 5000,
+      }),
+    ]);
 
-    const segmentSources: Array<[string, typeof rows]> = [
-      ['weekday', rows.filter((row) => !this.isWeekend(row.date))],
-      ['weekend', rows.filter((row) => this.isWeekend(row.date))],
-      [
-        'high_stress',
-        rows.filter(
-          (row) => this.featureValue(row.featureVector, 'psychologicalStressScore') >= 65,
-        ),
-      ],
-      [
-        'low_stress',
-        rows.filter(
-          (row) => this.featureValue(row.featureVector, 'psychologicalStressScore') < 65,
-        ),
-      ],
-      [
-        'high_night_usage',
-        rows.filter(
-          (row) => this.featureValue(row.featureVector, 'avgNightUsageMinutes') >= 90,
-        ),
-      ],
-      [
-        'low_night_usage',
-        rows.filter(
-          (row) => this.featureValue(row.featureVector, 'avgNightUsageMinutes') < 90,
-        ),
-      ],
+    const groundTruthByKey = new Map<string, RiskLevel>();
+    groundTruthLabels.forEach((labelRow) => {
+      const key = this.userDateKey(labelRow.user?.id ?? null, labelRow.date);
+      if (!key) {
+        return;
+      }
+      groundTruthByKey.set(key, toRiskLevel(labelRow.label));
+    });
+
+    const derivedLabelByKey = new Map<string, RiskLevel>();
+    featureStoreRows.forEach((featureRow) => {
+      const key = this.userDateKey(featureRow.user?.id ?? null, featureRow.date);
+      if (!key) {
+        return;
+      }
+      derivedLabelByKey.set(key, toRiskLevel(featureRow.addictionLabel));
+    });
+
+    return predictions
+      .map((prediction) => {
+        const userId = prediction.user?.id ?? null;
+        const key = this.userDateKey(userId, prediction.date);
+        if (!key) {
+          return null;
+        }
+
+        const actualLabel =
+          groundTruthByKey.get(key) ??
+          derivedLabelByKey.get(key) ??
+          toRiskLevel(prediction.riskLevel);
+        return {
+          date: prediction.date,
+          predictedLabel: this.classifyRisk(prediction.riskScore),
+          actualLabel,
+          riskScore: prediction.riskScore,
+          featureVector: this.parseFeatureVector(prediction.featureVectorJson),
+          demographics: this.parseDemographicsJson(
+            prediction.user?.demographicsJson ?? null,
+          ),
+        };
+      })
+      .filter((row): row is FairnessAuditRow => row !== null)
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  private computeFairnessAudit(
+    rows: FairnessAuditRow[],
+  ): ModelMonitoringSummary['fairnessAudit'] {
+    if (rows.length === 0) {
+      return {
+        segments: [],
+        maxAccuracyGap: 0,
+        maxFalsePositiveRateGap: 0,
+      };
+    }
+
+    const segments: SegmentAuditSummary[] = [];
+    const segmentSources: Array<[string, FairnessAuditRow[]]> = [];
+    const minimumSegmentSamples = 8;
+    const demographicAxes: Array<keyof UserDemographicsSnapshot> = [
+      'gender',
+      'ageBand',
+      'region',
+      'educationLevel',
+      'occupation',
     ];
+
+    demographicAxes.forEach((axis) => {
+      const groups = new Map<string, FairnessAuditRow[]>();
+      rows.forEach((row) => {
+        const groupValue = row.demographics[axis] ?? 'unknown';
+        const existing = groups.get(groupValue);
+        if (existing) {
+          existing.push(row);
+          return;
+        }
+        groups.set(groupValue, [row]);
+      });
+
+      const eligible = Array.from(groups.entries()).filter(
+        ([, subset]) => subset.length >= minimumSegmentSamples,
+      );
+      if (eligible.length < 2) {
+        return;
+      }
+      eligible.forEach(([group, subset]) => {
+        segmentSources.push([`demographic_${axis}:${group}`, subset]);
+      });
+    });
+
+    if (segmentSources.length === 0) {
+      segmentSources.push(
+        ['behavior_weekday', rows.filter((row) => !this.isWeekend(row.date))],
+        ['behavior_weekend', rows.filter((row) => this.isWeekend(row.date))],
+        [
+          'behavior_high_stress',
+          rows.filter(
+            (row) =>
+              this.featureValue(row.featureVector, 'psychologicalStressScore') >=
+              65,
+          ),
+        ],
+        [
+          'behavior_low_stress',
+          rows.filter(
+            (row) =>
+              this.featureValue(row.featureVector, 'psychologicalStressScore') <
+              65,
+          ),
+        ],
+      );
+    }
 
     segmentSources.forEach(([name, subset]) => {
       if (subset.length === 0) {
@@ -1733,6 +2356,66 @@ export class PredictionService {
       maxAccuracyGap,
       maxFalsePositiveRateGap,
     };
+  }
+
+  private defaultDemographics(): UserDemographicsSnapshot {
+    return {
+      ageBand: null,
+      gender: null,
+      region: null,
+      educationLevel: null,
+      occupation: null,
+    };
+  }
+
+  private parseDemographicsJson(raw: string | null): UserDemographicsSnapshot {
+    if (!raw) {
+      return this.defaultDemographics();
+    }
+
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return this.defaultDemographics();
+      }
+      const candidate = parsed as Record<string, unknown>;
+      return {
+        ageBand: this.normalizeDemographicValue(candidate.ageBand),
+        gender: this.normalizeDemographicValue(candidate.gender),
+        region: this.normalizeDemographicValue(candidate.region),
+        educationLevel: this.normalizeDemographicValue(candidate.educationLevel),
+        occupation: this.normalizeDemographicValue(candidate.occupation),
+      };
+    } catch {
+      return this.defaultDemographics();
+    }
+  }
+
+  private normalizeDemographicValue(value: unknown): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const normalized = value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 32);
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private userDateKey(userId: string | null, date: string): string | null {
+    if (!userId) {
+      return null;
+    }
+    return `${userId}:${date}`;
+  }
+
+  private isoDateDaysAgo(daysAgo: number): string {
+    const safeDays = Math.max(0, Math.floor(daysAgo));
+    const date = new Date();
+    date.setUTCDate(date.getUTCDate() - safeDays);
+    return date.toISOString().slice(0, 10);
   }
 
   private isWeekend(date: string): boolean {
