@@ -32,6 +32,10 @@ export class ModelProfile {
   @Column({ type: 'text', nullable: true })
   metricsJson: string;
 
+  // Latest training summary payload JSON
+  @Column({ type: 'text', nullable: true })
+  trainingSummaryJson: string;
+
   // Learned model coefficients + normalization metadata JSON
   @Column({ type: 'text', nullable: true })
   learnedModelJson: string;

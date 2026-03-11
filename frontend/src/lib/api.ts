@@ -707,6 +707,12 @@ class ApiClient {
         );
     }
 
+    async getPredictionTrainingSummary() {
+        return this.request<PredictionTrainingSummary | null>(
+            '/prediction/training-summary',
+        );
+    }
+
     // Risk analysis endpoints
     async getRiskAnalysis() {
         return this.request<RiskAnalysis>('/risk-analysis/latest');

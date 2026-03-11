@@ -82,13 +82,15 @@ export default function ModelOpsWorkspace() {
             }
 
             try {
-                const [labelData, monitoringData] = await Promise.all([
+                const [labelData, monitoringData, trainingData] = await Promise.all([
                     api.getGroundTruthLabels(90),
                     api.getPredictionMonitoring(120),
+                    api.getPredictionTrainingSummary(),
                 ]);
 
                 setLabels(labelData);
                 setMonitoring(monitoringData);
+                setTrainingSummary(trainingData);
             } catch (error) {
                 toast.error(getErrorMessage(error, 'Failed to load model operations data'));
             } finally {
@@ -605,9 +607,18 @@ export default function ModelOpsWorkspace() {
                             Samples: {trainingSummary.dataset.totalSamples}
                         </p>
                     </div>
+                    <div className="mt-3 text-sm text-slate-400">
+                        Trained at: {formatIso(trainingSummary.trainedAt)}
+                    </div>
+                    {trainingSummary.notes.length > 0 && (
+                        <ul className="mt-3 space-y-1 text-sm text-slate-400">
+                            {trainingSummary.notes.map((note, index) => (
+                                <li key={`${note}-${index}`}>- {note}</li>
+                            ))}
+                        </ul>
+                    )}
                 </section>
             )}
         </div>
     );
 }
-

@@ -1,6 +1,6 @@
 # SmartPulse ML Model Training and Algorithm Internals
 
-Last updated: 2026-03-07
+Last updated: 2026-03-11
 
 This document reflects the current implementation in backend and frontend after the modeling upgrades (ground-truth ingestion, trainable scorers, contextual features, calibration/backtest monitoring, and fairness audit).
 
@@ -10,8 +10,8 @@ SmartPulse now uses a hybrid scoring architecture:
 
 1. Deterministic feature engineering and preprocessing.
 2. Ensemble prediction (`randomForest`, `extraTrees`, `svm`) with configurable weights.
-3. Optional learned per-user tree-ensemble scorers from training history.
-4. Deterministic fallback formulas when learned coefficients are unavailable.
+3. Learned per-user scorers from training history (tree ensembles with a regularized linear fallback for small sample sizes).
+4. Deterministic fallback formulas only when no trainable model exists yet (cold start).
 
 Key services:
 

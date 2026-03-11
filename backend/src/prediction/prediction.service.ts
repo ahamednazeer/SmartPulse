@@ -209,6 +209,14 @@ const WEIGHT_GRID: EnsembleWeights[] = [
   { randomForest: 0.33, extraTrees: 0.33, svm: 0.34 },
 ];
 
+const AUTO_TRAIN_MIN_SAMPLES = 8;
+const AUTO_TRAIN_MIN_NEW_SAMPLES = 3;
+const AUTO_TRAIN_MIN_HOURS = 24;
+const AUTO_TRAIN_STALE_DAYS = 14;
+const MIN_TREE_TRAIN_SAMPLES = 12;
+const MIN_LINEAR_TRAIN_SAMPLES = 6;
+const MIN_STABLE_FEATURE_KEYS = 4;
+
 @Injectable()
 export class PredictionService {
   constructor(
@@ -234,8 +242,14 @@ export class PredictionService {
       throw new NotFoundException('User not found');
     }
 
-    const [profile, weights, learnedScorers] = await Promise.all([
-      this.preprocessingService.preprocessUserData(userId),
+    const profile = await this.preprocessingService.preprocessUserData(userId);
+    try {
+      await this.maybeAutoTrain(userId);
+    } catch {
+      // Auto-training should never block primary prediction flow.
+    }
+
+    const [weights, learnedScorers] = await Promise.all([
       this.getModelWeights(userId),
       this.getLearnedScorers(userId),
     ]);
@@ -332,6 +346,25 @@ export class PredictionService {
       notes.push(
         'Trainable tree-ensemble scorers were not produced (not enough stable feature samples). Falling back to deterministic scoring rules.',
       );
+    } else {
+      const linearChannels = (['randomForest', 'extraTrees', 'svm'] as const)
+        .map((key) => {
+          const model = learnedScorers[key];
+          if (!model || this.isTreeEnsembleModel(model)) {
+            return null;
+          }
+          return key;
+        })
+        .filter(
+          (
+            value,
+          ): value is 'randomForest' | 'extraTrees' | 'svm' => value !== null,
+        );
+      if (linearChannels.length > 0) {
+        notes.push(
+          `Linear fallback models trained for: ${linearChannels.join(', ')}.`,
+        );
+      }
     }
 
     let bestWeights = DEFAULT_WEIGHTS;
@@ -381,21 +414,7 @@ export class PredictionService {
     );
     const monitoring = await this.buildMonitoringSummary(userId, 90);
 
-    await this.upsertModelProfile(userId, {
-      weights: bestWeights,
-      searchSummary: gridSearchResults,
-      metrics: {
-        validation: bestValidationMetrics,
-        test: testMetrics,
-        crossValidationF1,
-      },
-      learnedScorers,
-      featureImportance: recalculatedImportance,
-      monitoring,
-      trainedSampleCount: sortedSamples.length,
-    });
-
-    return {
+    const trainingSummary: PredictionTrainingSummary = {
       trainedAt: new Date().toISOString(),
       dataset: {
         totalSamples: sortedSamples.length,
@@ -419,6 +438,23 @@ export class PredictionService {
       monitoring,
       notes,
     };
+
+    await this.upsertModelProfile(userId, {
+      weights: bestWeights,
+      searchSummary: gridSearchResults,
+      metrics: {
+        validation: bestValidationMetrics,
+        test: testMetrics,
+        crossValidationF1,
+      },
+      learnedScorers,
+      featureImportance: recalculatedImportance,
+      monitoring,
+      trainedSampleCount: sortedSamples.length,
+      trainingSummary,
+    });
+
+    return trainingSummary;
   }
 
   async getLatestPrediction(
@@ -457,6 +493,73 @@ export class PredictionService {
   ): Promise<ModelMonitoringSummary> {
     const safeDays = Math.max(30, Math.min(365, days));
     return this.buildMonitoringSummary(userId, safeDays);
+  }
+
+  async getLatestTrainingSummary(
+    userId: string,
+  ): Promise<PredictionTrainingSummary | null> {
+    const profile = await this.modelProfileRepository.findOne({
+      where: { user: { id: userId } },
+    });
+
+    if (!profile?.trainingSummaryJson) {
+      return null;
+    }
+
+    try {
+      const parsed: unknown = JSON.parse(profile.trainingSummaryJson);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return null;
+      }
+      return parsed as PredictionTrainingSummary;
+    } catch {
+      return null;
+    }
+  }
+
+  private async maybeAutoTrain(userId: string): Promise<void> {
+    const [profile, samples] = await Promise.all([
+      this.modelProfileRepository.findOne({
+        where: { user: { id: userId } },
+      }),
+      this.loadTrainingSamples(userId),
+    ]);
+
+    if (samples.length < AUTO_TRAIN_MIN_SAMPLES) {
+      return;
+    }
+
+    const trainedAt = this.parseIsoDate(profile?.trainedAtIso ?? null);
+    const hoursSince =
+      trainedAt === null
+        ? Number.POSITIVE_INFINITY
+        : (Date.now() - trainedAt.getTime()) / (60 * 60 * 1000);
+    const newSamples = Math.max(
+      0,
+      samples.length - (profile?.trainedSampleCount ?? 0),
+    );
+    const learnedMissing =
+      !profile?.learnedModelJson || profile.learnedModelJson === 'null';
+    const stale = hoursSince >= AUTO_TRAIN_STALE_DAYS * 24;
+    const shouldTrainForNewData =
+      newSamples >= AUTO_TRAIN_MIN_NEW_SAMPLES;
+    const shouldTrainForMissing =
+      learnedMissing && (trainedAt === null || newSamples > 0);
+    const shouldTrainForStale = stale && newSamples > 0;
+
+    if (hoursSince < AUTO_TRAIN_MIN_HOURS) {
+      return;
+    }
+
+    if (
+      !profile ||
+      trainedAt === null ||
+      shouldTrainForNewData ||
+      shouldTrainForMissing ||
+      shouldTrainForStale
+    ) {
+      await this.trainModel(userId);
+    }
   }
 
   private async loadTrainingSamples(userId: string): Promise<TrainingSample[]> {
@@ -725,6 +828,7 @@ export class PredictionService {
       featureImportance: Record<string, number>;
       monitoring: ModelMonitoringSummary;
       trainedSampleCount: number;
+      trainingSummary?: PredictionTrainingSummary;
     },
   ): Promise<void> {
     let profile = await this.modelProfileRepository.findOne({
@@ -740,6 +844,9 @@ export class PredictionService {
     profile.weightsJson = JSON.stringify(payload.weights);
     profile.searchSummaryJson = JSON.stringify(payload.searchSummary);
     profile.metricsJson = JSON.stringify(payload.metrics);
+    if (payload.trainingSummary) {
+      profile.trainingSummaryJson = JSON.stringify(payload.trainingSummary);
+    }
     profile.learnedModelJson = JSON.stringify(payload.learnedScorers ?? null);
     profile.featureImportanceJson = JSON.stringify(payload.featureImportance);
     profile.monitoringJson = JSON.stringify(payload.monitoring);
@@ -1183,12 +1290,20 @@ export class PredictionService {
   private trainLearnedScorers(
     trainSet: TrainingSample[],
   ): LearnedScorers | null {
-    if (trainSet.length < 12) {
+    if (trainSet.length < MIN_LINEAR_TRAIN_SAMPLES) {
       return null;
     }
 
     const stableKeys = this.collectStableFeatureKeys(trainSet, 0.35);
-    if (stableKeys.length < 6) {
+    let candidateKeys = stableKeys;
+    if (candidateKeys.length < MIN_STABLE_FEATURE_KEYS) {
+      const ranked = this.rankFeatureKeysByVariance(trainSet);
+      candidateKeys = ranked.slice(
+        0,
+        Math.max(MIN_STABLE_FEATURE_KEYS, candidateKeys.length),
+      );
+    }
+    if (candidateKeys.length < 2) {
       return null;
     }
 
@@ -1223,37 +1338,47 @@ export class PredictionService {
       'connectivityDisruptionScore',
     ];
 
-    const rfKeys = this.selectFeatureKeys(stableKeys, rfPreferred);
-    const etKeys = this.selectFeatureKeys(stableKeys, etPreferred);
-    const svmKeys = this.selectFeatureKeys(stableKeys, svmPreferred);
+    const rfKeys = this.selectFeatureKeys(candidateKeys, rfPreferred);
+    const etKeys = this.selectFeatureKeys(candidateKeys, etPreferred);
+    const svmKeys = this.selectFeatureKeys(candidateKeys, svmPreferred);
+    const canTrainTrees = trainSet.length >= MIN_TREE_TRAIN_SAMPLES;
 
-    const randomForest = this.trainTreeEnsembleRegressor(trainSet, rfKeys, {
-      treeCount: 29,
-      maxDepth: 5,
-      minSamplesLeaf: 3,
-      featureSubsampleRatio: 0.65,
-      splitCandidatesPerFeature: 10,
-      splitStrategy: 'BEST',
-      bootstrap: true,
-    });
-    const extraTrees = this.trainTreeEnsembleRegressor(trainSet, etKeys, {
-      treeCount: 35,
-      maxDepth: 5,
-      minSamplesLeaf: 2,
-      featureSubsampleRatio: 0.8,
-      splitCandidatesPerFeature: 14,
-      splitStrategy: 'RANDOM',
-      bootstrap: false,
-    });
-    const svm = this.trainTreeEnsembleRegressor(trainSet, svmKeys, {
-      treeCount: 21,
-      maxDepth: 4,
-      minSamplesLeaf: 3,
-      featureSubsampleRatio: 0.55,
-      splitCandidatesPerFeature: 8,
-      splitStrategy: 'BEST',
-      bootstrap: true,
-    });
+    const randomForest =
+      (canTrainTrees
+        ? this.trainTreeEnsembleRegressor(trainSet, rfKeys, {
+            treeCount: 29,
+            maxDepth: 5,
+            minSamplesLeaf: 3,
+            featureSubsampleRatio: 0.65,
+            splitCandidatesPerFeature: 10,
+            splitStrategy: 'BEST',
+            bootstrap: true,
+          })
+        : null) ?? this.trainLinearModel(trainSet, rfKeys);
+    const extraTrees =
+      (canTrainTrees
+        ? this.trainTreeEnsembleRegressor(trainSet, etKeys, {
+            treeCount: 35,
+            maxDepth: 5,
+            minSamplesLeaf: 2,
+            featureSubsampleRatio: 0.8,
+            splitCandidatesPerFeature: 14,
+            splitStrategy: 'RANDOM',
+            bootstrap: false,
+          })
+        : null) ?? this.trainLinearModel(trainSet, etKeys);
+    const svm =
+      (canTrainTrees
+        ? this.trainTreeEnsembleRegressor(trainSet, svmKeys, {
+            treeCount: 21,
+            maxDepth: 4,
+            minSamplesLeaf: 3,
+            featureSubsampleRatio: 0.55,
+            splitCandidatesPerFeature: 8,
+            splitStrategy: 'BEST',
+            bootstrap: true,
+          })
+        : null) ?? this.trainLinearModel(trainSet, svmKeys);
 
     if (!randomForest && !extraTrees && !svm) {
       return null;
@@ -1301,6 +1426,141 @@ export class PredictionService {
       return chosen;
     }
     return stableKeys;
+  }
+
+  private rankFeatureKeysByVariance(samples: TrainingSample[]): string[] {
+    const stats = new Map<
+      string,
+      { count: number; sum: number; sumSq: number }
+    >();
+
+    samples.forEach((sample) => {
+      Object.entries(sample.featureVector).forEach(([key, value]) => {
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+          return;
+        }
+        const entry = stats.get(key) ?? { count: 0, sum: 0, sumSq: 0 };
+        entry.count += 1;
+        entry.sum += value;
+        entry.sumSq += value * value;
+        stats.set(key, entry);
+      });
+    });
+
+    return Array.from(stats.entries())
+      .map(([key, entry]) => {
+        const mean = entry.sum / Math.max(1, entry.count);
+        const variance = Math.max(
+          0,
+          entry.sumSq / Math.max(1, entry.count) - mean * mean,
+        );
+        return { key, variance };
+      })
+      .sort((a, b) => b.variance - a.variance)
+      .map((item) => item.key);
+  }
+
+  private trainLinearModel(
+    samples: TrainingSample[],
+    featureKeys: string[],
+  ): LearnedLinearModel | null {
+    if (samples.length < MIN_LINEAR_TRAIN_SAMPLES || featureKeys.length < 2) {
+      return null;
+    }
+
+    const meanByFeature: Record<string, number> = {};
+    const stdByFeature: Record<string, number> = {};
+
+    featureKeys.forEach((key) => {
+      let count = 0;
+      let sum = 0;
+      let sumSq = 0;
+      samples.forEach((sample) => {
+        const raw = sample.featureVector[key];
+        if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+          return;
+        }
+        count += 1;
+        sum += raw;
+        sumSq += raw * raw;
+      });
+      if (count === 0) {
+        meanByFeature[key] = 0;
+        stdByFeature[key] = 1;
+        return;
+      }
+      const mean = sum / count;
+      const variance = Math.max(0, sumSq / count - mean * mean);
+      const std = Math.sqrt(variance);
+      meanByFeature[key] = this.round4(mean);
+      stdByFeature[key] = this.round4(std > 1e-6 ? std : 1);
+    });
+
+    const rows = samples.map((sample) => {
+      const features = featureKeys.map((key) => {
+        const raw = sample.featureVector[key];
+        const mean = meanByFeature[key] ?? 0;
+        const std = stdByFeature[key] ?? 1;
+        const value =
+          typeof raw === 'number' && Number.isFinite(raw) ? raw : mean;
+        return (value - mean) / Math.max(std, 1e-6);
+      });
+      return {
+        features,
+        target: this.labelToRegressionTarget(sample.label),
+      };
+    });
+
+    if (rows.length === 0) {
+      return null;
+    }
+
+    const featureCount = featureKeys.length;
+    let intercept = this.average(rows.map((row) => row.target));
+    const weights = new Array(featureCount).fill(0);
+
+    const iterations = 260;
+    const learningRate = 0.05;
+    const l2 = 0.01;
+
+    for (let iter = 0; iter < iterations; iter += 1) {
+      let gradB = 0;
+      const gradW = new Array(featureCount).fill(0);
+
+      rows.forEach((row) => {
+        let prediction = intercept;
+        for (let idx = 0; idx < featureCount; idx += 1) {
+          prediction += weights[idx] * row.features[idx];
+        }
+        const error = prediction - row.target;
+        gradB += error;
+        for (let idx = 0; idx < featureCount; idx += 1) {
+          gradW[idx] += error * row.features[idx];
+        }
+      });
+
+      const invN = 1 / rows.length;
+      gradB *= invN;
+      for (let idx = 0; idx < featureCount; idx += 1) {
+        gradW[idx] = gradW[idx] * invN + l2 * weights[idx];
+        weights[idx] -= learningRate * gradW[idx];
+      }
+      intercept -= learningRate * gradB;
+    }
+
+    const coefficients: Record<string, number> = {};
+    featureKeys.forEach((key, index) => {
+      coefficients[key] = this.round4(weights[index]);
+    });
+
+    return {
+      modelType: 'LINEAR',
+      featureKeys,
+      meanByFeature,
+      stdByFeature,
+      coefficients,
+      intercept: this.round4(intercept),
+    };
   }
 
   private trainTreeEnsembleRegressor(
@@ -1928,6 +2188,14 @@ export class PredictionService {
     } catch {
       return null;
     }
+  }
+
+  private parseIsoDate(value: string | null): Date | null {
+    if (!value) {
+      return null;
+    }
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
   }
 
   private async buildMonitoringSummary(

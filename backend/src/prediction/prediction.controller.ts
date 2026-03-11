@@ -51,4 +51,9 @@ export class PredictionController {
       days ? parseInt(days, 10) : 90,
     );
   }
+
+  @Get('training-summary')
+  async getTrainingSummary(@Request() req: AuthenticatedRequest) {
+    return this.predictionService.getLatestTrainingSummary(req.user.id);
+  }
 }

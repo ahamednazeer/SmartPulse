@@ -106,6 +106,7 @@ Compute addiction risk and train user-specific scoring artifacts.
 - `GET /api/prediction/latest`
 - `GET /api/prediction/history?limit=30`
 - `GET /api/prediction/monitor?days=90`
+- `GET /api/prediction/training-summary`
 
 ## Module 6 - Risk Analysis Module
 
