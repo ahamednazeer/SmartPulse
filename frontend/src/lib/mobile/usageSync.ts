@@ -17,7 +17,7 @@ const USAGE_BUFFER_KEY = 'usage_buffer_v1';
 const LAST_SYNC_KEY = 'usage_last_sync_iso';
 const NETWORK_TRACE_KEY = 'usage_network_trace_v1';
 
-export const USAGE_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
+export const USAGE_SYNC_INTERVAL_MS = 20 * 60 * 1000;
 
 interface SyncResult {
     collected: boolean;

@@ -45,4 +45,3 @@ export class GroundTruthLabel {
   @UpdateDateColumn()
   updatedAt: Date;
 }
-

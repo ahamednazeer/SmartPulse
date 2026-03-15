@@ -2,7 +2,8 @@ export type SmartPulsePermissionField =
     | 'screenUsageMonitoring'
     | 'appUsageStatistics'
     | 'notificationAccess'
-    | 'backgroundActivityTracking';
+    | 'backgroundActivityTracking'
+    | 'locationTracking';
 
 export interface UsageSnapshot {
     screenTimeMinutes: number;

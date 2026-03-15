@@ -222,7 +222,9 @@ export class UsageService {
       connectivityContext: this.parseJsonObject(record.connectivityContextJson),
       locationContext: this.parseJsonObject(record.locationContextJson),
       microCheckins: this.parseJsonArray(record.microCheckinsJson),
-      interventionOutcomes: this.parseJsonArray(record.interventionOutcomesJson),
+      interventionOutcomes: this.parseJsonArray(
+        record.interventionOutcomesJson,
+      ),
       createdAt: record.createdAt,
     };
   }
@@ -279,7 +281,7 @@ export class UsageService {
       if (!Array.isArray(parsed)) {
         return null;
       }
-      return parsed;
+      return parsed as unknown[];
     } catch {
       return null;
     }

@@ -88,6 +88,7 @@ export interface PermissionSettings {
     appUsageStatistics: boolean;
     notificationAccess: boolean;
     backgroundActivityTracking: boolean;
+    locationTracking: boolean;
 }
 
 export interface UserProfile {

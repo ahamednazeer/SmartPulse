@@ -236,7 +236,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                 </aside>
 
                 <main className="relative z-10 flex-1 overflow-x-hidden pb-[calc(4.6rem+env(safe-area-inset-bottom))] xl:pb-0">
-                    <div className="print:hidden sticky top-0 z-40 backdrop-blur-md bg-slate-950/90 border-b border-slate-700">
+                    <div className="print:hidden sticky top-0 z-40 backdrop-blur-md bg-slate-950/90 border-b border-slate-700 pt-[env(safe-area-inset-top,0px)]">
                         <div className="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
                             <div className="flex items-center gap-3 md:gap-4 min-w-0">
                                 <Heartbeat

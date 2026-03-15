@@ -40,7 +40,9 @@ export class GroundTruthService {
     record.label = dto.label;
     record.source = dto.source?.trim() || 'UNSPECIFIED';
     record.confidence =
-      typeof dto.confidence === 'number' ? this.clamp(dto.confidence, 0, 1) : null;
+      typeof dto.confidence === 'number'
+        ? this.clamp(dto.confidence, 0, 1)
+        : null;
     record.notes = dto.notes?.trim() || null;
 
     const saved = await this.labelRepository.save(record);
@@ -108,4 +110,3 @@ export class GroundTruthService {
     return Math.min(max, Math.max(min, value));
   }
 }
-

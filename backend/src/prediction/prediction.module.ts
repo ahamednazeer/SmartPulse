@@ -8,6 +8,10 @@ import { FeatureStoreRecord } from '../entities/feature-store-record.entity';
 import { PreprocessingModule } from '../preprocessing/preprocessing.module';
 import { PredictionService } from './prediction.service';
 import { PredictionController } from './prediction.controller';
+import { MarkovService } from './markov.service';
+import { AnomalyService } from './anomaly.service';
+import { ForecastService } from './forecast.service';
+import { ContextScorerService } from './context-scorer.service';
 
 @Module({
   imports: [
@@ -20,8 +24,20 @@ import { PredictionController } from './prediction.controller';
     ]),
     PreprocessingModule,
   ],
-  providers: [PredictionService],
+  providers: [
+    PredictionService,
+    MarkovService,
+    AnomalyService,
+    ForecastService,
+    ContextScorerService,
+  ],
   controllers: [PredictionController],
-  exports: [PredictionService],
+  exports: [
+    PredictionService,
+    MarkovService,
+    AnomalyService,
+    ForecastService,
+    ContextScorerService,
+  ],
 })
 export class PredictionModule {}

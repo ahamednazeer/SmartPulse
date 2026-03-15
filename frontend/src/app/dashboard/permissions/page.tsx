@@ -8,6 +8,7 @@ import {
     Pulse,
     CheckCircle,
     ShieldCheck,
+    MapPin,
 } from '@phosphor-icons/react';
 import { api } from '@/lib/api';
 import type { PermissionSettings } from '@/lib/api';
@@ -27,7 +28,7 @@ interface PermissionItem {
     icon: React.ElementType;
     title: string;
     description: string;
-    field: 'screenUsageMonitoring' | 'appUsageStatistics' | 'notificationAccess' | 'backgroundActivityTracking';
+    field: 'screenUsageMonitoring' | 'appUsageStatistics' | 'notificationAccess' | 'backgroundActivityTracking' | 'locationTracking';
 }
 
 const permissionItems: PermissionItem[] = [
@@ -59,6 +60,13 @@ const permissionItems: PermissionItem[] = [
         description: 'Track background activities and phone unlock patterns.',
         field: 'backgroundActivityTracking',
     },
+    {
+        key: 'location',
+        icon: MapPin,
+        title: 'Location Context Tracking',
+        description: 'Collect context on what environments trigger heavy usage.',
+        field: 'locationTracking',
+    },
 ];
 
 const DEFAULT_PERMISSIONS: PermissionSettings = {
@@ -66,6 +74,7 @@ const DEFAULT_PERMISSIONS: PermissionSettings = {
     appUsageStatistics: false,
     notificationAccess: false,
     backgroundActivityTracking: false,
+    locationTracking: false,
 };
 
 function combinePermissionSources(
@@ -85,6 +94,9 @@ function combinePermissionSources(
         backgroundActivityTracking:
             Boolean(first?.backgroundActivityTracking) ||
             Boolean(second?.backgroundActivityTracking),
+        locationTracking:
+            Boolean(first?.locationTracking) ||
+            Boolean(second?.locationTracking),
     };
 }
 

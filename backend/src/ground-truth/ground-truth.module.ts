@@ -12,4 +12,3 @@ import { GroundTruthService } from './ground-truth.service';
   exports: [GroundTruthService],
 })
 export class GroundTruthModule {}
-

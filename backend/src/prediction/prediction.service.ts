@@ -356,9 +356,8 @@ export class PredictionService {
           return key;
         })
         .filter(
-          (
-            value,
-          ): value is 'randomForest' | 'extraTrees' | 'svm' => value !== null,
+          (value): value is 'randomForest' | 'extraTrees' | 'svm' =>
+            value !== null,
         );
       if (linearChannels.length > 0) {
         notes.push(
@@ -460,17 +459,23 @@ export class PredictionService {
   async getLatestPrediction(
     userId: string,
   ): Promise<PredictionResultView | null> {
-    const latest = await this.predictionRepository.findOne({
-      where: { user: { id: userId } },
-      order: { date: 'DESC' },
-    });
+    try {
+      // Force real-time processing of latest telemetry
+      return await this.runPrediction(userId);
+    } catch (e) {
+      // Fallback to latest cached prediction if evaluation fails
+      const latest = await this.predictionRepository.findOne({
+        where: { user: { id: userId } },
+        order: { date: 'DESC' },
+      });
 
-    if (!latest) {
-      return null;
+      if (!latest) {
+        return null;
+      }
+
+      const weights = await this.getModelWeights(userId);
+      return this.sanitize(latest, weights);
     }
-
-    const weights = await this.getModelWeights(userId);
-    return this.sanitize(latest, weights);
   }
 
   async getPredictionHistory(
@@ -541,8 +546,7 @@ export class PredictionService {
     const learnedMissing =
       !profile?.learnedModelJson || profile.learnedModelJson === 'null';
     const stale = hoursSince >= AUTO_TRAIN_STALE_DAYS * 24;
-    const shouldTrainForNewData =
-      newSamples >= AUTO_TRAIN_MIN_NEW_SAMPLES;
+    const shouldTrainForNewData = newSamples >= AUTO_TRAIN_MIN_NEW_SAMPLES;
     const shouldTrainForMissing =
       learnedMissing && (trainedAt === null || newSamples > 0);
     const shouldTrainForStale = stale && newSamples > 0;
@@ -674,7 +678,10 @@ export class PredictionService {
         GROUND_TRUTH: 0,
         DERIVED_FEATURE: 0,
         DERIVED_PREDICTION: 0,
-      } as Record<'GROUND_TRUTH' | 'DERIVED_FEATURE' | 'DERIVED_PREDICTION', number>,
+      } as Record<
+        'GROUND_TRUTH' | 'DERIVED_FEATURE' | 'DERIVED_PREDICTION',
+        number
+      >,
     );
   }
 
@@ -1041,7 +1048,10 @@ export class PredictionService {
         featureMap,
         'avgLongestSessionMinutes',
       ),
-      avgNotificationCount: this.featureValue(featureMap, 'avgNotificationCount'),
+      avgNotificationCount: this.featureValue(
+        featureMap,
+        'avgNotificationCount',
+      ),
       avgNotificationResponseRate: this.featureValue(
         featureMap,
         'avgNotificationResponseRate',
@@ -1073,7 +1083,10 @@ export class PredictionService {
         featureMap,
         'sleepDisruptionScore',
       ),
-      notificationLoadScore: this.featureValue(featureMap, 'notificationLoadScore'),
+      notificationLoadScore: this.featureValue(
+        featureMap,
+        'notificationLoadScore',
+      ),
       sleepRegularityRiskScore: this.featureValue(
         featureMap,
         'sleepRegularityRiskScore',
@@ -1185,11 +1198,15 @@ export class PredictionService {
     }
 
     if (features.sleepRegularityRiskScore >= 60) {
-      insights.push('Sleep regularity telemetry indicates inconsistent recovery');
+      insights.push(
+        'Sleep regularity telemetry indicates inconsistent recovery',
+      );
     }
 
     if (features.notificationLoadScore >= 65) {
-      insights.push('High notification pressure may be amplifying checking loops');
+      insights.push(
+        'High notification pressure may be amplifying checking loops',
+      );
     }
 
     if (insights.length === 0) {
@@ -1550,7 +1567,7 @@ export class PredictionService {
 
     const coefficients: Record<string, number> = {};
     featureKeys.forEach((key, index) => {
-      coefficients[key] = this.round4(weights[index]);
+      coefficients[key] = this.round4(weights[index] as number);
     });
 
     return {
@@ -1691,7 +1708,9 @@ export class PredictionService {
     let bestSplit: CandidateSplit | null = null;
 
     for (const feature of candidateFeatures) {
-      const values = rows.map((row) => this.featureValue(row.featureVector, feature));
+      const values = rows.map((row) =>
+        this.featureValue(row.featureVector, feature),
+      );
       const thresholds = this.generateThresholdCandidates(
         values,
         options.splitCandidatesPerFeature,
@@ -1848,7 +1867,11 @@ export class PredictionService {
     return selected.slice(0, target);
   }
 
-  private pickRandomSubset<T>(items: T[], count: number, rng: () => number): T[] {
+  private pickRandomSubset<T>(
+    items: T[],
+    count: number,
+    rng: () => number,
+  ): T[] {
     if (count >= items.length) {
       return [...items];
     }
@@ -1886,7 +1909,9 @@ export class PredictionService {
     this.collectTreeFeatureImportance(node.right, output);
   }
 
-  private normalizeImportance(values: Record<string, number>): Record<string, number> {
+  private normalizeImportance(
+    values: Record<string, number>,
+  ): Record<string, number> {
     const entries = Object.entries(values);
     if (entries.length === 0) {
       return {};
@@ -1948,7 +1973,10 @@ export class PredictionService {
     }
 
     const aggregate: Record<string, number> = {};
-    const addWeights = (model: LearnedScorerModel | null, modelWeight: number) => {
+    const addWeights = (
+      model: LearnedScorerModel | null,
+      modelWeight: number,
+    ) => {
       if (!model) {
         return;
       }
@@ -2001,7 +2029,9 @@ export class PredictionService {
     }
     const obj = value as Record<string, unknown>;
     const featureKeys = Array.isArray(obj.featureKeys)
-      ? obj.featureKeys.filter((item): item is string => typeof item === 'string')
+      ? obj.featureKeys.filter(
+          (item): item is string => typeof item === 'string',
+        )
       : [];
     if (featureKeys.length === 0) {
       return null;
@@ -2041,7 +2071,9 @@ export class PredictionService {
     }
 
     const featureKeys = Array.isArray(obj.featureKeys)
-      ? obj.featureKeys.filter((item): item is string => typeof item === 'string')
+      ? obj.featureKeys.filter(
+          (item): item is string => typeof item === 'string',
+        )
       : [];
     const trees = Array.isArray(obj.trees)
       ? obj.trees
@@ -2050,7 +2082,9 @@ export class PredictionService {
       : [];
     const treeWeights = Array.isArray(obj.treeWeights)
       ? obj.treeWeights
-          .map((item) => (typeof item === 'number' && Number.isFinite(item) ? item : 0))
+          .map((item) =>
+            typeof item === 'number' && Number.isFinite(item) ? item : 0,
+          )
           .slice(0, trees.length)
       : [];
 
@@ -2066,11 +2100,14 @@ export class PredictionService {
         ? Math.max(1, Math.floor(obj.maxDepth))
         : 5;
     const minSamplesLeaf =
-      typeof obj.minSamplesLeaf === 'number' && Number.isFinite(obj.minSamplesLeaf)
+      typeof obj.minSamplesLeaf === 'number' &&
+      Number.isFinite(obj.minSamplesLeaf)
         ? Math.max(1, Math.floor(obj.minSamplesLeaf))
         : 2;
     const splitStrategy = obj.splitStrategy === 'RANDOM' ? 'RANDOM' : 'BEST';
-    const featureImportance = this.parseNumberMapFromUnknown(obj.featureImportance);
+    const featureImportance = this.parseNumberMapFromUnknown(
+      obj.featureImportance,
+    );
 
     return {
       modelType: 'TREE_ENSEMBLE',
@@ -2090,7 +2127,9 @@ export class PredictionService {
     }
     const obj = value as Record<string, unknown>;
     const nodeValue =
-      typeof obj.value === 'number' && Number.isFinite(obj.value) ? obj.value : null;
+      typeof obj.value === 'number' && Number.isFinite(obj.value)
+        ? obj.value
+        : null;
     if (nodeValue === null) {
       return null;
     }
@@ -2151,7 +2190,8 @@ export class PredictionService {
       profile?.monitoringJson ?? null,
     );
     const staleMs = 24 * 60 * 60 * 1000;
-    const isStale = !generatedAt || Date.now() - generatedAt.getTime() >= staleMs;
+    const isStale =
+      !generatedAt || Date.now() - generatedAt.getTime() >= staleMs;
 
     if (!isStale) {
       return;
@@ -2284,9 +2324,8 @@ export class PredictionService {
       };
     });
     const drift = this.computeDriftSummary(featureStoreRecords);
-    const fairnessRows = await this.loadDemographicFairnessRows(
-      evaluationWindowDays,
-    );
+    const fairnessRows =
+      await this.loadDemographicFairnessRows(evaluationWindowDays);
     const fallbackDemographics = this.parseDemographicsJson(
       user?.demographicsJson ?? null,
     );
@@ -2378,7 +2417,10 @@ export class PredictionService {
   }
 
   private computeDriftSummary(
-    featureStoreRecords: Array<{ date: string; featureVector: Record<string, number> }>,
+    featureStoreRecords: Array<{
+      date: string;
+      featureVector: Record<string, number>;
+    }>,
   ): ModelMonitoringSummary['drift'] {
     const ordered = [...featureStoreRecords].sort((a, b) =>
       a.date.localeCompare(b.date),
@@ -2400,7 +2442,9 @@ export class PredictionService {
     }
 
     const keys = new Set<string>();
-    recent.forEach((row) => Object.keys(row.featureVector).forEach((key) => keys.add(key)));
+    recent.forEach((row) =>
+      Object.keys(row.featureVector).forEach((key) => keys.add(key)),
+    );
     baseline.forEach((row) =>
       Object.keys(row.featureVector).forEach((key) => keys.add(key)),
     );
@@ -2415,7 +2459,8 @@ export class PredictionService {
       const baselineMean = this.average(
         baseline.map((row) => this.featureValue(row.featureVector, key)),
       );
-      const shift = (recentMean - baselineMean) / Math.max(Math.abs(baselineMean), 1);
+      const shift =
+        (recentMean - baselineMean) / Math.max(Math.abs(baselineMean), 1);
       const rounded = this.round3(shift);
       featureShift[key] = rounded;
       if (Math.abs(rounded) >= 0.35) {
@@ -2433,26 +2478,27 @@ export class PredictionService {
     evaluationWindowDays: number,
   ): Promise<FairnessAuditRow[]> {
     const cutoffDate = this.isoDateDaysAgo(evaluationWindowDays);
-    const [predictions, groundTruthLabels, featureStoreRows] = await Promise.all([
-      this.predictionRepository.find({
-        where: { date: MoreThanOrEqual(cutoffDate) },
-        relations: ['user'],
-        order: { date: 'DESC' },
-        take: 5000,
-      }),
-      this.groundTruthRepository.find({
-        where: { date: MoreThanOrEqual(cutoffDate) },
-        relations: ['user'],
-        order: { date: 'DESC' },
-        take: 5000,
-      }),
-      this.featureStoreRepository.find({
-        where: { date: MoreThanOrEqual(cutoffDate) },
-        relations: ['user'],
-        order: { date: 'DESC' },
-        take: 5000,
-      }),
-    ]);
+    const [predictions, groundTruthLabels, featureStoreRows] =
+      await Promise.all([
+        this.predictionRepository.find({
+          where: { date: MoreThanOrEqual(cutoffDate) },
+          relations: ['user'],
+          order: { date: 'DESC' },
+          take: 5000,
+        }),
+        this.groundTruthRepository.find({
+          where: { date: MoreThanOrEqual(cutoffDate) },
+          relations: ['user'],
+          order: { date: 'DESC' },
+          take: 5000,
+        }),
+        this.featureStoreRepository.find({
+          where: { date: MoreThanOrEqual(cutoffDate) },
+          relations: ['user'],
+          order: { date: 'DESC' },
+          take: 5000,
+        }),
+      ]);
 
     const groundTruthByKey = new Map<string, RiskLevel>();
     groundTruthLabels.forEach((labelRow) => {
@@ -2465,7 +2511,10 @@ export class PredictionService {
 
     const derivedLabelByKey = new Map<string, RiskLevel>();
     featureStoreRows.forEach((featureRow) => {
-      const key = this.userDateKey(featureRow.user?.id ?? null, featureRow.date);
+      const key = this.userDateKey(
+        featureRow.user?.id ?? null,
+        featureRow.date,
+      );
       if (!key) {
         return;
       }
@@ -2552,8 +2601,10 @@ export class PredictionService {
           'behavior_high_stress',
           rows.filter(
             (row) =>
-              this.featureValue(row.featureVector, 'psychologicalStressScore') >=
-              65,
+              this.featureValue(
+                row.featureVector,
+                'psychologicalStressScore',
+              ) >= 65,
           ),
         ],
         [
@@ -2613,7 +2664,9 @@ export class PredictionService {
     const maxAccuracyGap =
       accuracyValues.length === 0
         ? 0
-        : this.round2(Math.max(...accuracyValues) - Math.min(...accuracyValues));
+        : this.round2(
+            Math.max(...accuracyValues) - Math.min(...accuracyValues),
+          );
     const maxFalsePositiveRateGap =
       fprValues.length === 0
         ? 0
@@ -2651,7 +2704,9 @@ export class PredictionService {
         ageBand: this.normalizeDemographicValue(candidate.ageBand),
         gender: this.normalizeDemographicValue(candidate.gender),
         region: this.normalizeDemographicValue(candidate.region),
-        educationLevel: this.normalizeDemographicValue(candidate.educationLevel),
+        educationLevel: this.normalizeDemographicValue(
+          candidate.educationLevel,
+        ),
         occupation: this.normalizeDemographicValue(candidate.occupation),
       };
     } catch {

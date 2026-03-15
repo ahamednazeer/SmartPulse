@@ -1,6 +1,7 @@
 import { isNativePlatform } from './capacitorBridge';
 import { requestPushPermission } from './pushNotifications';
 import { hasUsageAccess, openUsageAccessSettings } from './usageStats';
+import { Geolocation } from '@capacitor/geolocation';
 import type { SmartPulsePermissionField } from './types';
 
 export interface PermissionCheckResult {
@@ -42,6 +43,24 @@ export async function ensureNativePermission(
                 ? undefined
                 : permission.reason ?? 'Notification permission was not granted.',
         };
+    }
+
+    if (field === 'locationTracking') {
+        try {
+            let status = await Geolocation.checkPermissions();
+            if (status.location !== 'granted') {
+                status = await Geolocation.requestPermissions();
+            }
+            return {
+                granted: status.location === 'granted',
+                message: status.location === 'granted' ? undefined : 'Location permission was denied.',
+            };
+        } catch (error: any) {
+            return {
+                granted: false,
+                message: 'Failed to request location permission: ' + (error.message || 'Unknown error'),
+            };
+        }
     }
 
     return { granted: true };

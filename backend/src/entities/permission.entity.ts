@@ -24,6 +24,9 @@ export class Permission {
   @Column({ default: false })
   backgroundActivityTracking: boolean;
 
+  @Column({ default: false })
+  locationTracking: boolean;
+
   @OneToOne(() => User, (user) => user.permission)
   @JoinColumn()
   user: User;

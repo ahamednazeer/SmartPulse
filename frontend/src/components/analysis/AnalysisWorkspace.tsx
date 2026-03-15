@@ -22,6 +22,15 @@ import {
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
+import { TopAppsBarChart } from './TopAppsBarChart';
+import { ReactionSpeedometer } from './ReactionSpeedometer';
+import { ScreenTimeHeatmap } from './ScreenTimeHeatmap';
+import { HabitFlowchart } from './HabitFlowchart';
+import { ContextScatterPlot } from './charts/ContextScatterPlot';
+import { HabitRadarChart } from './charts/HabitRadarChart';
+import { DoomscrollGauge } from './charts/DoomscrollGauge';
+import { CategoryTreemap } from './charts/CategoryTreemap';
+import { CauseAndEffectChart } from './charts/CauseAndEffectChart';
 import type {
     UsageSummary,
     UsageRecord,
@@ -96,7 +105,7 @@ interface MicroCheckinFormState {
     note: string;
 }
 
-type AnalysisView = 'overview' | 'trends' | 'actions';
+type AnalysisView = 'overview' | 'trends' | 'actions' | 'details';
 
 interface AnalysisWorkspaceProps {
     view: AnalysisView;
@@ -114,6 +123,7 @@ const DEFAULT_PERMISSIONS: PermissionSettings = {
     appUsageStatistics: false,
     notificationAccess: false,
     backgroundActivityTracking: false,
+    locationTracking: false,
 };
 
 const INTERVENTION_MODES: InterventionMode[] = [
@@ -158,6 +168,12 @@ const ANALYSIS_TABS: AnalysisTab[] = [
         label: 'Actions',
         path: '/dashboard/analysis/actions',
         icon: Lightbulb,
+    },
+    {
+        id: 'details',
+        label: 'Deep Dive',
+        path: '/dashboard/analysis/details',
+        icon: ListChecks,
     },
 ];
 
@@ -379,13 +395,13 @@ function computeRiskDrivers(
     }
 
     const avgScreenTime =
-        analysis?.keyMetrics.avgScreenTimeMinutes ?? summary?.avgScreenTime ?? 0;
+        summary?.avgScreenTime ?? analysis?.keyMetrics.avgScreenTimeMinutes ?? 0;
     const avgUnlocks =
-        analysis?.keyMetrics.avgUnlockCount ?? summary?.avgUnlocks ?? 0;
+        summary?.avgUnlocks ?? analysis?.keyMetrics.avgUnlockCount ?? 0;
     const avgNight =
-        analysis?.keyMetrics.avgNightUsageMinutes ?? summary?.avgNightUsage ?? 0;
+        summary?.avgNightUsage ?? analysis?.keyMetrics.avgNightUsageMinutes ?? 0;
     const avgSocial =
-        analysis?.keyMetrics.avgSocialMediaMinutes ?? summary?.avgSocialMedia ?? 0;
+        summary?.avgSocialMedia ?? analysis?.keyMetrics.avgSocialMediaMinutes ?? 0;
 
     const drivers: RiskDriver[] = [
         {
@@ -608,12 +624,13 @@ async function maybeTriggerJitAlerts(
     riskLevel: string,
     records: UsageRecord[],
     analysis: RiskAnalysis | null,
+    summary: UsageSummary | null,
 ): Promise<void> {
     const today = toDateKey(new Date());
     const currentState = readJitAlertState();
 
     const latest = [...records].sort((a, b) => b.date.localeCompare(a.date))[0] ?? null;
-    const avgNight = analysis?.keyMetrics.avgNightUsageMinutes ?? 0;
+    const avgNight = summary?.avgNightUsage ?? analysis?.keyMetrics.avgNightUsageMinutes ?? 0;
 
     const candidates: Array<{
         key: string;
@@ -892,10 +909,10 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
         const riskScore = clamp(Math.round(analysis?.riskScore ?? 0), 0, 100);
         const riskLevel = toDisplayRiskLevel(analysis?.riskLevel ?? null);
 
-        void maybeTriggerJitAlerts(riskScore, riskLevel, records, analysis).finally(() => {
+        void maybeTriggerJitAlerts(riskScore, riskLevel, records, analysis, summary).finally(() => {
             setJitAlertChecked(true);
         });
-    }, [analysis, jitAlertChecked, loading, records]);
+    }, [analysis, jitAlertChecked, loading, records, summary]);
 
     const refreshRiskInsights = async () => {
         setRefreshing(true);
@@ -1170,16 +1187,21 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
     const showOverview = view === 'overview';
     const showTrends = view === 'trends';
     const showActions = view === 'actions';
+    const showDetails = view === 'details';
     const heroTitle = showOverview
         ? 'Risk Analysis Hub'
         : showTrends
             ? 'Trend Intelligence'
-            : 'Action Center';
+            : showActions
+                ? 'Action Center'
+                : 'Deep Dive Metrics';
     const heroSummary = showOverview
         ? toRiskSummary(riskLevel)
         : showTrends
             ? 'Track weekly patterns, timeline drift, and early behavior shifts.'
-            : 'Complete interventions, log check-ins, and lock in better habits.';
+            : showActions
+                ? 'Complete interventions, log check-ins, and lock in better habits.'
+                : 'Highly accurate, granular usage data powered by native device sensors.';
 
     if (loading) {
         return (
@@ -1303,7 +1325,7 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                 </div>
             </div>
 
-            {(showOverview || showTrends) && !hasUsageRecords ? (
+            {(showOverview || showTrends || showDetails) && !hasUsageRecords ? (
                 <div className="card text-center py-10">
                     <ChartLineUp
                         size={56}
@@ -1383,8 +1405,8 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                                     </div>
                                     <div className="text-2xl font-chivo font-bold text-slate-100">
                                         {Math.round(
-                                            analysis?.keyMetrics.avgScreenTimeMinutes ??
                                             summary?.avgScreenTime ??
+                                            analysis?.keyMetrics.avgScreenTimeMinutes ??
                                             0,
                                         )}
                                         m
@@ -1397,8 +1419,8 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                                     </div>
                                     <div className="text-2xl font-chivo font-bold text-slate-100">
                                         {Math.round(
-                                            analysis?.keyMetrics.avgUnlockCount ??
                                             summary?.avgUnlocks ??
+                                            analysis?.keyMetrics.avgUnlockCount ??
                                             0,
                                         )}
                                     </div>
@@ -1410,8 +1432,8 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                                     </div>
                                     <div className="text-2xl font-chivo font-bold text-slate-100">
                                         {Math.round(
-                                            analysis?.keyMetrics.avgSocialMediaMinutes ??
                                             summary?.avgSocialMedia ??
+                                            analysis?.keyMetrics.avgSocialMediaMinutes ??
                                             0,
                                         )}
                                         m
@@ -1424,8 +1446,8 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                                     </div>
                                     <div className="text-2xl font-chivo font-bold text-slate-100">
                                         {Math.round(
-                                            analysis?.keyMetrics.avgNightUsageMinutes ??
                                             summary?.avgNightUsage ??
+                                            analysis?.keyMetrics.avgNightUsageMinutes ??
                                             0,
                                         )}
                                         m
@@ -1466,6 +1488,15 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                                             </div>
                                         ))}
                                     </div>
+                                )}
+                            </div>
+
+                            <div className="card">
+                                <h3 className="font-chivo font-bold text-sm uppercase tracking-wider mb-4 border-b border-slate-800 pb-2">Top 5 Behavioral Sinks</h3>
+                                {records.length > 0 ? (
+                                    <TopAppsBarChart appUsage={recentRecords[0]?.appUsage || null} />
+                                ) : (
+                                    <p className="text-sm text-slate-500">Wait for background syncs to capture app usage.</p>
                                 )}
                             </div>
 
@@ -1845,6 +1876,123 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                                 </div>
                             </div>
                         )}
+                        </div>
+                    )}
+                    {showDetails && (
+                        <div className="space-y-4">
+                            <div className="card border-blue-800/40 bg-gradient-to-r from-slate-900/60 to-blue-950/20">
+                                <h3 className="font-chivo font-bold text-lg uppercase tracking-wider mb-4 flex items-center gap-2">
+                                    <Clock size={20} className="text-blue-400" />
+                                    Detailed Averages Overview
+                                </h3>
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                                    <div className="p-4 rounded border border-slate-700/60 bg-slate-900/50">
+                                        <div className="text-sm font-mono uppercase text-slate-400">Total Screen Time</div>
+                                        <div className="text-3xl font-chivo font-bold text-slate-100 mt-2">
+                                            {Math.round(records[0]?.screenTimeMinutes ?? summary?.avgScreenTime ?? 0)}m
+                                        </div>
+                                    </div>
+                                    <div className="p-4 rounded border border-slate-700/60 bg-slate-900/50">
+                                        <div className="text-sm font-mono uppercase text-slate-400">Unlock Count</div>
+                                        <div className="text-3xl font-chivo font-bold text-slate-100 mt-2">
+                                            {Math.round(records[0]?.unlockCount ?? summary?.avgUnlocks ?? 0)}
+                                        </div>
+                                    </div>
+                                    <div className="p-4 rounded border border-slate-700/60 bg-slate-900/50">
+                                        <div className="text-sm font-mono uppercase text-slate-400">Social Usage</div>
+                                        <div className="text-3xl font-chivo font-bold text-slate-100 mt-2">
+                                            {Math.round(records[0]?.socialMediaMinutes ?? summary?.avgSocialMedia ?? 0)}m
+                                        </div>
+                                    </div>
+                                    <div className="p-4 rounded border border-slate-700/60 bg-slate-900/50">
+                                        <div className="text-sm font-mono uppercase text-slate-400">Night Usage</div>
+                                        <div className="text-3xl font-chivo font-bold text-slate-100 mt-2">
+                                            {Math.round(records[0]?.nightUsageMinutes ?? summary?.avgNightUsage ?? 0)}m
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div className="card">
+                                <h3 className="font-chivo font-bold text-sm uppercase tracking-wider mb-4">Location & Activity Context (Native Sensors)</h3>
+                                <p className="text-xs text-slate-500 mb-4">
+                                    Highly accurate context derived from Android FusedLocationProvider and Activity Recognition APIs.
+                                </p>
+                                {records.length > 0 ? (
+                                    <div className="space-y-3">
+                                        {recentRecords.slice(0, 3).map(rec => (
+                                            <div key={rec.id} className="p-3 bg-slate-900/30 rounded border border-slate-800">
+                                                <div className="text-xs text-blue-400 font-mono mb-2">{formatDateLabel(rec.date)}</div>
+                                                <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300">
+                                                    <div>Location Context: <span className="text-slate-100">{rec.locationContext ? String(rec.locationContext.dominantZone || 'Heuristic') : 'N/A'}</span></div>
+                                                    <div>Activity Context: <span className="text-slate-100">{rec.activityContext ? String(rec.activityContext.currentActivity || 'Stationary') : 'N/A'}</span></div>
+                                                    <div>App Categories: <span className="text-slate-100">{rec.appCategoryTimeline ? 'OS Accurate' : 'Fallback Keyword-based'}</span></div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="text-sm text-slate-500">Wait for background syncs to capture rich sensor data.</div>
+                                )}
+                            </div>
+
+                            {/* ADVANCED VISUALISATIONS DASHBOARD */}
+                            {records.length > 0 && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="card">
+                                        <h3 className="font-chivo font-bold text-sm uppercase tracking-wider mb-4 border-b border-slate-800 pb-2">Top 5 Behavioral Sinks</h3>
+                                        <TopAppsBarChart appUsage={recentRecords[0]?.appUsage || null} />
+                                    </div>
+                                    <div className="card">
+                                        <h3 className="font-chivo font-bold text-sm uppercase tracking-wider mb-4 border-b border-slate-800 pb-2">Impulsivity Speedometer</h3>
+                                        <ReactionSpeedometer 
+                                            avgLatencySec={
+                                                ((recentRecords[0]?.activityContext as Record<string, unknown>)?.advancedSensors as { avgLatencySec?: number })?.avgLatencySec || 0
+                                            } 
+                                        />
+                                    </div>
+                                    <div className="card md:col-span-2">
+                                        <h3 className="font-chivo font-bold text-sm uppercase tracking-wider mb-4 border-b border-slate-800 pb-2">24-Hour Intensity Heatmap</h3>
+                                        <ScreenTimeHeatmap appUsageTimeline={recentRecords[0]?.appCategoryTimeline || null} peakHour={recentRecords[0]?.peakUsageHour || 14} />
+                                    </div>
+                                    <div className="card md:col-span-2">
+                                        <h3 className="font-chivo font-bold text-sm uppercase tracking-wider mb-4 border-b border-slate-800 pb-2">Subconscious Habit Loops</h3>
+                                        <HabitFlowchart 
+                                            habitSequence={
+                                                ((recentRecords[0]?.activityContext as Record<string, unknown>)?.advancedSensors as { habitSequence?: string[] })?.habitSequence || null
+                                            } 
+                                        />
+                                    </div>
+
+                                    {/* ULTIMATE VISUALIZATIONS */}
+                                    <div className="card md:col-span-2">
+                                        <h3 className="font-chivo font-bold text-sm uppercase tracking-wider mb-4 border-b border-slate-800 pb-2">Where & When: The Context Matrix</h3>
+                                        <ContextScatterPlot records={recentRecords} />
+                                    </div>
+                                    <div className="card">
+                                        <h3 className="font-chivo font-bold text-sm uppercase tracking-wider mb-4 border-b border-slate-800 pb-2">Consistency Radar</h3>
+                                        <HabitRadarChart scores={{
+                                            screenTime: summary?.avgScreenTime || 0,
+                                            unlocks: summary?.avgUnlocks || 0,
+                                            social: summary?.avgSocialMedia || 0,
+                                            latency: ((recentRecords[0]?.activityContext as Record<string, unknown>)?.advancedSensors as { avgLatencySec?: number })?.avgLatencySec || 15,
+                                            night: summary?.avgNightUsage || 0
+                                        }} />
+                                    </div>
+                                    <div className="card">
+                                        <h3 className="font-chivo font-bold text-sm uppercase tracking-wider mb-4 border-b border-slate-800 pb-2">The Doomscroll Depth Gauge</h3>
+                                        <DoomscrollGauge longestSessionMinutes={Math.max(...recentRecords.map(r => r.longestSessionMinutes || 0), 10)} />
+                                    </div>
+                                    <div className="card">
+                                        <h3 className="font-chivo font-bold text-sm uppercase tracking-wider mb-4 border-b border-slate-800 pb-2">Attention Hierarchy</h3>
+                                        <CategoryTreemap appUsage={recentRecords[0]?.appUsage || null} />
+                                    </div>
+                                    <div className="card">
+                                        <h3 className="font-chivo font-bold text-sm uppercase tracking-wider mb-4 border-b border-slate-800 pb-2">Cause & Effect: Impulsivity vs Duration</h3>
+                                        <CauseAndEffectChart records={recentRecords} />
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     )}
                 </>

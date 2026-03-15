@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Post, Query, Request, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Query,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { AuthenticatedRequest } from '../auth/types/authenticated-request.type';
 import { GroundTruthService } from './ground-truth.service';
@@ -33,4 +41,3 @@ export class GroundTruthController {
     return this.groundTruthService.getLatestLabel(req.user.id);
   }
 }
-

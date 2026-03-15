@@ -260,9 +260,7 @@ export class UserService {
     };
   }
 
-  private sanitizeActionTracker(
-    input: unknown,
-  ): Record<string, boolean> {
+  private sanitizeActionTracker(input: unknown): Record<string, boolean> {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       return {};
     }

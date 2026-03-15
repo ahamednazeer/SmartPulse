@@ -49,6 +49,9 @@ export class UpdatePermissionsDto {
 
   @IsOptional()
   backgroundActivityTracking?: boolean;
+
+  @IsOptional()
+  locationTracking?: boolean;
 }
 
 export class ActiveInterventionDto {

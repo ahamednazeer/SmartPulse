@@ -1,5 +1,15 @@
 package io.smartpulse.app;
 
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import java.util.LinkedList;
+import org.json.JSONArray;
+
+
 import android.app.AppOpsManager;
 import android.app.usage.UsageEvents;
 import android.app.usage.UsageStats;
@@ -40,6 +50,52 @@ import java.util.Set;
 
 @CapacitorPlugin(name = "SmartPulseUsage")
 public class SmartPulseUsagePlugin extends Plugin {
+
+    private ScreenStateReceiver screenStateReceiver;
+    private SensorManager sensorManager;
+    private Sensor stepSensor;
+    private int stepCount = 0;
+
+    private SensorEventListener stepListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent event) {
+            stepCount = (int) event.values[0];
+            SharedPreferences prefs = getContext().getSharedPreferences("SmartPulseScreenPrefs", Context.MODE_PRIVATE);
+            prefs.edit().putInt("dailyStepCount", stepCount).apply();
+        }
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+    };
+
+    @Override
+    public void load() {
+        super.load();
+        screenStateReceiver = new ScreenStateReceiver();
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_SCREEN_ON);
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        getContext().registerReceiver(screenStateReceiver, filter);
+
+        sensorManager = (SensorManager) getContext().getSystemService(Context.SENSOR_SERVICE);
+        if (sensorManager != null) {
+            stepSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER);
+            if (stepSensor != null) {
+                sensorManager.registerListener(stepListener, stepSensor, SensorManager.SENSOR_DELAY_UI);
+            }
+        }
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        super.handleOnDestroy();
+        if (screenStateReceiver != null) {
+            getContext().unregisterReceiver(screenStateReceiver);
+        }
+        if (sensorManager != null) {
+            sensorManager.unregisterListener(stepListener);
+        }
+    }
+
 
     private static final int MINUTES_IN_MILLIS = 60 * 1000;
     private static final int NOTIFICATION_OPEN_WINDOW_MS = 2 * 60 * 1000;
@@ -211,336 +267,101 @@ public class SmartPulseUsagePlugin extends Plugin {
     }
 
     @NonNull
+
     private UsageSnapshot buildSnapshot(long startTimeMs, long endTimeMs) {
-        UsageStatsManager usageStatsManager =
-            (UsageStatsManager) getContext().getSystemService(Context.USAGE_STATS_SERVICE);
-
-        if (usageStatsManager == null) {
-            return new UsageSnapshot();
-        }
-
-        List<UsageStats> stats = usageStatsManager.queryUsageStats(
-            UsageStatsManager.INTERVAL_DAILY,
-            startTimeMs,
-            endTimeMs
-        );
-
+        UsageStatsManager usm = (UsageStatsManager) getContext().getSystemService(Context.USAGE_STATS_SERVICE);
+        UsageEvents events = usm.queryEvents(startTimeMs, endTimeMs);
         UsageSnapshot snapshot = new UsageSnapshot();
 
-        Map<String, Double> appUsageMinutesByPackage = new HashMap<>();
-        double totalScreenTimeMinutes = 0;
+        Map<String, Long> appUsageMap = new HashMap<>();
+        Map<String, Long> lastTimeUsedMap = new HashMap<>();
+        
+        // Advanced Trackers
+        LinkedList<String> habitSequence = new LinkedList<>(); 
+        long lastNotificationTimeMs = 0;
+        long totalReactionLatencyMs = 0;
+        int reactedNotifications = 0;
 
-        for (UsageStats stat : stats) {
-            long foregroundMs = stat.getTotalTimeInForeground();
-            if (foregroundMs <= 0) {
-                continue;
-            }
-
-            double minutes = foregroundMs / (double) MINUTES_IN_MILLIS;
-            totalScreenTimeMinutes += minutes;
-
-            String packageName = stat.getPackageName();
-            appUsageMinutesByPackage.put(
-                packageName,
-                appUsageMinutesByPackage.getOrDefault(packageName, 0.0) + minutes
-            );
-        }
-
-        snapshot.screenTimeMinutes = roundMinutes(totalScreenTimeMinutes);
-
-        Map<Integer, Double> hourlyMinutes = new HashMap<>();
-        Map<String, CategoryBucket> categoryTimeline = new HashMap<>();
-        Map<String, Long> foregroundStartByPackage = new HashMap<>();
-
-        Map<String, Integer> notificationPosted = newCategoryCounter();
-        Map<String, Integer> notificationOpened = newCategoryCounter();
-        Map<String, Double> notificationOpenDelaySeconds = newCategoryDoubleCounter();
-        Map<String, Integer> notificationOpenDelaySamples = newCategoryCounter();
-        Map<String, ArrayDeque<Long>> pendingNotificationsByPackage = new HashMap<>();
-
-        List<JSObject> sessionEvents = new ArrayList<>();
-
-        int wakeAfterSleepChecks = 0;
-        int midnightSessionCount = 0;
-        int shortSessionCount = 0;
-        int commuteShortSessionCount = 0;
-
-        Long firstMorningActivityTs = null;
-        Long lastNightActivityTs = null;
-        String lastForegroundPackage = null;
-
-        UsageEvents events = usageStatsManager.queryEvents(startTimeMs, endTimeMs);
-        UsageEvents.Event event = new UsageEvents.Event();
+        int notificationCount = 0;
+        UsageEvents.Event currentEvent = new UsageEvents.Event();
 
         while (events.hasNextEvent()) {
-            events.getNextEvent(event);
-            int eventType = event.getEventType();
-            long eventTime = event.getTimeStamp();
-            String packageName = event.getPackageName() == null ? "" : event.getPackageName();
+            events.getNextEvent(currentEvent);
+            String pkg = currentEvent.getPackageName();
 
-            if (eventType == UsageEvents.Event.KEYGUARD_HIDDEN) {
-                snapshot.unlockCount += 1;
-                if (isHourInRange(eventTime, 0, 6)) {
-                    wakeAfterSleepChecks += 1;
-                }
-                maybeSetFirstMorningActivity(eventTime, firstMorningActivityTs);
-                if (isHourInRange(eventTime, 4, 11) && firstMorningActivityTs == null) {
-                    firstMorningActivityTs = eventTime;
-                }
-                if (isHourInNightWindow(eventTime)) {
-                    lastNightActivityTs = eventTime;
-                }
-                appendSessionEvent(
-                    sessionEvents,
-                    eventTime,
-                    "unlock",
-                    null,
-                    null,
-                    null,
-                    null
-                );
-                continue;
-            }
-
-            if (eventType == UsageEvents.Event.KEYGUARD_SHOWN) {
-                appendSessionEvent(
-                    sessionEvents,
-                    eventTime,
-                    "lock",
-                    null,
-                    null,
-                    null,
-                    null
-                );
-                continue;
-            }
-
-            if (
-                EVENT_NOTIFICATION_INTERRUPTION != Integer.MIN_VALUE
-                    && eventType == EVENT_NOTIFICATION_INTERRUPTION
-            ) {
-                String category = categorizePackage(packageName, resolveAppLabel(packageName));
-                incrementCounter(notificationPosted, category, 1);
-                pendingNotificationsByPackage
-                    .computeIfAbsent(packageName, key -> new ArrayDeque<>())
-                    .addLast(eventTime);
-
-                appendSessionEvent(
-                    sessionEvents,
-                    eventTime,
-                    "notification_interrupt",
-                    packageName,
-                    resolveAppLabel(packageName),
-                    category,
-                    null
-                );
-                continue;
-            }
-
-            if (isForegroundEvent(eventType)) {
-                String appLabel = resolveAppLabel(packageName);
-                String category = categorizePackage(packageName, appLabel);
-
-                if (lastForegroundPackage != null && !lastForegroundPackage.equals(packageName)) {
-                    appendSessionEvent(
-                        sessionEvents,
-                        eventTime,
-                        "app_switch",
-                        packageName,
-                        appLabel,
-                        category,
-                        null
-                    );
+            if (currentEvent.getEventType() == 12) { // NOTIFICATION_INTERRUPTION
+                notificationCount++;
+                lastNotificationTimeMs = currentEvent.getTimeStamp();
+            } else if (currentEvent.getEventType() == UsageEvents.Event.ACTIVITY_RESUMED) {
+                lastTimeUsedMap.put(pkg, currentEvent.getTimeStamp());
+                
+                // Track habit sequences
+                if (habitSequence.size() == 0 || !habitSequence.getLast().equals(pkg)) {
+                    habitSequence.add(pkg);
+                    if (habitSequence.size() > 50) habitSequence.removeFirst();
                 }
 
-                appendSessionEvent(
-                    sessionEvents,
-                    eventTime,
-                    "app_foreground",
-                    packageName,
-                    appLabel,
-                    category,
-                    null
-                );
-
-                ArrayDeque<Long> pending = pendingNotificationsByPackage.get(packageName);
-                if (pending != null) {
-                    while (!pending.isEmpty()) {
-                        long postedTs = pending.peekFirst();
-                        long delayMs = eventTime - postedTs;
-
-                        if (delayMs < 0) {
-                            pending.removeFirst();
-                            continue;
-                        }
-
-                        if (delayMs <= NOTIFICATION_OPEN_WINDOW_MS) {
-                            pending.removeFirst();
-                            incrementCounter(notificationOpened, category, 1);
-                            addToCounter(notificationOpenDelaySeconds, category, delayMs / 1000.0);
-                            incrementCounter(notificationOpenDelaySamples, category, 1);
-                            break;
-                        }
-
-                        break;
-                    }
+                // Reaction Latency
+                if (lastNotificationTimeMs > 0 && currentEvent.getTimeStamp() - lastNotificationTimeMs < 60000) {
+                    totalReactionLatencyMs += (currentEvent.getTimeStamp() - lastNotificationTimeMs);
+                    reactedNotifications++;
+                    lastNotificationTimeMs = 0;
                 }
-
-                foregroundStartByPackage.put(packageName, eventTime);
-                lastForegroundPackage = packageName;
-
-                if (isHourInRange(eventTime, 4, 11) && firstMorningActivityTs == null) {
-                    firstMorningActivityTs = eventTime;
-                }
-                if (isHourInNightWindow(eventTime)) {
-                    lastNightActivityTs = eventTime;
-                }
-
-                continue;
-            }
-
-            if (isBackgroundEvent(eventType)) {
-                Long foregroundStart = foregroundStartByPackage.remove(packageName);
-                if (foregroundStart == null) {
-                    continue;
-                }
-
-                long sessionStart = Math.max(startTimeMs, foregroundStart);
-                long sessionEnd = Math.min(endTimeMs, eventTime);
-                if (sessionEnd <= sessionStart) {
-                    continue;
-                }
-
-                double sessionMinutes = (sessionEnd - sessionStart) / (double) MINUTES_IN_MILLIS;
-                snapshot.longestSessionMinutes = Math.max(
-                    snapshot.longestSessionMinutes,
-                    roundMinutes(sessionMinutes)
-                );
-
-                if (sessionMinutes <= 3.0) {
-                    shortSessionCount += 1;
-                    if (isCommuteHour(sessionStart)) {
-                        commuteShortSessionCount += 1;
-                    }
-                }
-
-                if (isHourInRange(sessionStart, 0, 6)) {
-                    midnightSessionCount += 1;
-                }
-
-                String appLabel = resolveAppLabel(packageName);
-                String category = categorizePackage(packageName, appLabel);
-
-                distributeSession(
-                    sessionStart,
-                    sessionEnd,
-                    category,
-                    hourlyMinutes,
-                    categoryTimeline
-                );
-
-                appendSessionEvent(
-                    sessionEvents,
-                    eventTime,
-                    "app_background",
-                    packageName,
-                    appLabel,
-                    category,
-                    roundMinutes(sessionMinutes)
-                );
-
-                if (packageName.equals(lastForegroundPackage)) {
-                    lastForegroundPackage = null;
+            } else if (currentEvent.getEventType() == UsageEvents.Event.ACTIVITY_PAUSED ||
+                    currentEvent.getEventType() == UsageEvents.Event.ACTIVITY_STOPPED) {
+                if (lastTimeUsedMap.containsKey(pkg)) {
+                    long duration = currentEvent.getTimeStamp() - lastTimeUsedMap.get(pkg);
+                    appUsageMap.put(pkg, appUsageMap.getOrDefault(pkg, 0L) + duration);
+                    lastTimeUsedMap.remove(pkg);
                 }
             }
         }
 
-        // Handle sessions still in foreground at the end boundary.
-        for (Map.Entry<String, Long> entry : foregroundStartByPackage.entrySet()) {
-            long sessionStart = Math.max(startTimeMs, entry.getValue());
-            long sessionEnd = endTimeMs;
-            if (sessionEnd <= sessionStart) {
-                continue;
+        int totalScreenTimeMinutes = 0;
+        int socialTimeMinutes = 0;
+        int nightUsageMinutes = 0;
+        
+        for (Map.Entry<String, Long> entry : appUsageMap.entrySet()) {
+            String pkg = entry.getKey();
+            long millis = entry.getValue();
+            if (millis < 60000) continue; 
+            
+            String appLabel = resolveAppLabel(pkg);
+            int appMinutes = (int) (millis / 60000);
+            totalScreenTimeMinutes += appMinutes;
+            snapshot.appUsage.put(appLabel, appMinutes);
+
+            String category = categorizePackage(pkg, appLabel);
+            if ("social".equals(category)) {
+                socialTimeMinutes += appMinutes;
             }
-
-            double sessionMinutes = (sessionEnd - sessionStart) / (double) MINUTES_IN_MILLIS;
-            snapshot.longestSessionMinutes = Math.max(
-                snapshot.longestSessionMinutes,
-                roundMinutes(sessionMinutes)
-            );
-
-            String packageName = entry.getKey();
-            String appLabel = resolveAppLabel(packageName);
-            String category = categorizePackage(packageName, appLabel);
-
-            distributeSession(
-                sessionStart,
-                sessionEnd,
-                category,
-                hourlyMinutes,
-                categoryTimeline
-            );
-
-            appendSessionEvent(
-                sessionEvents,
-                sessionEnd,
-                "app_background",
-                packageName,
-                appLabel,
-                category,
-                roundMinutes(sessionMinutes)
-            );
         }
 
-        snapshot.nightUsageMinutes = roundMinutes(sumNightMinutes(hourlyMinutes));
-        snapshot.peakUsageHour = findPeakHour(hourlyMinutes);
-
-        double socialMinutes = 0;
-        Map<String, Integer> appUsageByLabel = new HashMap<>();
-        for (Map.Entry<String, Double> entry : appUsageMinutesByPackage.entrySet()) {
-            String packageName = entry.getKey();
-            int roundedMinutes = roundMinutes(entry.getValue());
-            if (roundedMinutes <= 0) {
-                continue;
-            }
-
-            String appLabel = resolveAppLabel(packageName);
-            if ("social".equals(categorizePackage(packageName, appLabel))) {
-                socialMinutes += entry.getValue();
-            }
-
-            appUsageByLabel.put(appLabel, appUsageByLabel.getOrDefault(appLabel, 0) + roundedMinutes);
+        SharedPreferences screenPrefs = getContext().getSharedPreferences("SmartPulseScreenPrefs", Context.MODE_PRIVATE);
+        int realScreenTimeMs = (int) screenPrefs.getLong("totalScreenTimeMs", 0);
+        if (realScreenTimeMs > 60000) {
+             totalScreenTimeMinutes = realScreenTimeMs / 60000;
         }
 
-        snapshot.socialMediaMinutes = roundMinutes(socialMinutes);
-        snapshot.appUsage = appUsageByLabel;
-        snapshot.appCategoryTimeline = toCategoryTimelineJson(categoryTimeline);
+        int avgLatencySec = reactedNotifications > 0 ? (int)((totalReactionLatencyMs / reactedNotifications) / 1000) : 0;
+        int stepCount = screenPrefs.getInt("dailyStepCount", 0);
+        
+        snapshot.screenTimeMinutes = totalScreenTimeMinutes;
+        snapshot.socialMediaMinutes = socialTimeMinutes;
+        snapshot.notificationCount = notificationCount;
+        snapshot.unlockCount = 0; 
 
-        NotificationInteractionTelemetry notificationTelemetry = buildNotificationTelemetry(
-            notificationPosted,
-            notificationOpened,
-            notificationOpenDelaySeconds,
-            notificationOpenDelaySamples
-        );
-        snapshot.notificationInteraction = notificationTelemetry.toJson();
-        snapshot.notificationCount = notificationTelemetry.totalPosted;
-
-        snapshot.sessionEvents = toJsonArray(sessionEvents);
-        snapshot.sleepProxies = buildSleepProxies(
-            firstMorningActivityTs,
-            lastNightActivityTs,
-            wakeAfterSleepChecks,
-            midnightSessionCount,
-            snapshot.nightUsageMinutes
-        );
-        snapshot.activityContext = buildActivityContext(
-            snapshot.screenTimeMinutes,
-            shortSessionCount,
-            commuteShortSessionCount
-        );
-        snapshot.batteryContext = readBatteryContext();
-        snapshot.connectivityContext = readConnectivityContext();
-        snapshot.locationContext = buildLocationContext(hourlyMinutes);
+        try {
+            JSObject advancedStats = new JSObject();
+            advancedStats.put("avgLatencySec", avgLatencySec);
+            advancedStats.put("stepCount", stepCount);
+            JSONArray habitArray = new JSONArray();
+            for(String s : habitSequence) habitArray.put(s);
+            advancedStats.put("habitSequence", habitArray);
+            
+            snapshot.activityContext = buildActivityContext(totalScreenTimeMinutes, snapshot.unlockCount, 0);
+            snapshot.activityContext.put("advancedSensors", advancedStats);
+        } catch (Exception e) {}
 
         return snapshot;
     }

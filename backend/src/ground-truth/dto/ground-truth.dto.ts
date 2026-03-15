@@ -1,4 +1,12 @@
-import { IsIn, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
+import {
+  IsIn,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Matches,
+  Max,
+  Min,
+} from 'class-validator';
 
 export class UpsertGroundTruthLabelDto {
   @IsString()
@@ -26,4 +34,3 @@ export class UpsertGroundTruthLabelDto {
   @IsOptional()
   notes?: string;
 }
-

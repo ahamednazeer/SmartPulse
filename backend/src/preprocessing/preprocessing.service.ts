@@ -446,32 +446,58 @@ export class PreprocessingService {
         70,
       );
 
-      const posted = this.getNestedNumber(
-        notificationInteraction,
-        'postedByCategory',
-        'social',
-      ) +
-        this.getNestedNumber(notificationInteraction, 'postedByCategory', 'video') +
-        this.getNestedNumber(notificationInteraction, 'postedByCategory', 'games') +
+      const posted =
+        this.getNestedNumber(
+          notificationInteraction,
+          'postedByCategory',
+          'social',
+        ) +
+        this.getNestedNumber(
+          notificationInteraction,
+          'postedByCategory',
+          'video',
+        ) +
+        this.getNestedNumber(
+          notificationInteraction,
+          'postedByCategory',
+          'games',
+        ) +
         this.getNestedNumber(
           notificationInteraction,
           'postedByCategory',
           'productivity',
         ) +
-        this.getNestedNumber(notificationInteraction, 'postedByCategory', 'other');
-      const opened = this.getNestedNumber(
-        notificationInteraction,
-        'openedByCategory',
-        'social',
-      ) +
-        this.getNestedNumber(notificationInteraction, 'openedByCategory', 'video') +
-        this.getNestedNumber(notificationInteraction, 'openedByCategory', 'games') +
+        this.getNestedNumber(
+          notificationInteraction,
+          'postedByCategory',
+          'other',
+        );
+      const opened =
+        this.getNestedNumber(
+          notificationInteraction,
+          'openedByCategory',
+          'social',
+        ) +
+        this.getNestedNumber(
+          notificationInteraction,
+          'openedByCategory',
+          'video',
+        ) +
+        this.getNestedNumber(
+          notificationInteraction,
+          'openedByCategory',
+          'games',
+        ) +
         this.getNestedNumber(
           notificationInteraction,
           'openedByCategory',
           'productivity',
         ) +
-        this.getNestedNumber(notificationInteraction, 'openedByCategory', 'other');
+        this.getNestedNumber(
+          notificationInteraction,
+          'openedByCategory',
+          'other',
+        );
       const notificationResponseRate = this.clamp(
         posted <= 0 ? 0 : (opened / posted) * 100,
         0,
@@ -806,7 +832,9 @@ export class PreprocessingService {
     const activityFragmentationScore = this.round1(
       normalized.activityFragmentationNorm * 100,
     );
-    const commuteImpulseScore = this.round1(normalized.commuteImpulseNorm * 100);
+    const commuteImpulseScore = this.round1(
+      normalized.commuteImpulseNorm * 100,
+    );
     const moodRiskScore = this.round1(
       this.normalize(5 - survey.mood, 0, 4) * 100,
     );
