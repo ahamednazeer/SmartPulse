@@ -25,8 +25,8 @@ import { GroundTruthModule } from './ground-truth/ground-truth.module';
   imports: [
     TypeOrmModule.forRootAsync({
       useFactory: () => ({
-        type: 'sqlite',
-        driver: require('@libsql/sqlite3'),
+        type: 'better-sqlite3',
+        driver: require('libsql'),
         database: process.env.DATABASE_NAME || 'libsql://smartpulse-blazeking.aws-ap-south-1.turso.io',
         entities: [
           User,
