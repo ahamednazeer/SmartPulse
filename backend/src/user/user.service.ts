@@ -127,6 +127,7 @@ export class UserService {
       appUsageStatistics: permission.appUsageStatistics,
       notificationAccess: permission.notificationAccess,
       backgroundActivityTracking: permission.backgroundActivityTracking,
+      locationTracking: permission.locationTracking,
     };
   }
 
@@ -154,6 +155,8 @@ export class UserService {
       permission.notificationAccess = dto.notificationAccess;
     if (dto.backgroundActivityTracking !== undefined)
       permission.backgroundActivityTracking = dto.backgroundActivityTracking;
+    if (dto.locationTracking !== undefined)
+      permission.locationTracking = dto.locationTracking;
 
     await this.permissionRepository.save(permission);
 
@@ -168,6 +171,7 @@ export class UserService {
       appUsageStatistics: permission.appUsageStatistics,
       notificationAccess: permission.notificationAccess,
       backgroundActivityTracking: permission.backgroundActivityTracking,
+      locationTracking: permission.locationTracking,
     };
   }
 
@@ -425,6 +429,7 @@ export class UserService {
             notificationAccess: user.permission.notificationAccess,
             backgroundActivityTracking:
               user.permission.backgroundActivityTracking,
+            locationTracking: user.permission.locationTracking,
           }
         : null,
     };

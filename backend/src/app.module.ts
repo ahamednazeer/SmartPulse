@@ -23,21 +23,24 @@ import { GroundTruthModule } from './ground-truth/ground-truth.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forRoot({
-      type: 'better-sqlite3',
-      database: 'smartpulse.db',
-      entities: [
-        User,
-        Permission,
-        SurveyResponse,
-        UsageRecord,
-        PredictionResult,
-        NotificationHistory,
-        FeatureStoreRecord,
-        ModelProfile,
-        GroundTruthLabel,
-      ],
-      synchronize: true,
+    TypeOrmModule.forRootAsync({
+      useFactory: () => ({
+        type: 'sqlite',
+        driver: require('@libsql/sqlite3'),
+        database: process.env.DATABASE_NAME || 'libsql://smartpulse-blazeking.aws-ap-south-1.turso.io',
+        entities: [
+          User,
+          Permission,
+          SurveyResponse,
+          UsageRecord,
+          PredictionResult,
+          NotificationHistory,
+          FeatureStoreRecord,
+          ModelProfile,
+          GroundTruthLabel,
+        ],
+        synchronize: true,
+      }),
     }),
     AuthModule,
     UserModule,
@@ -52,4 +55,4 @@ import { GroundTruthModule } from './ground-truth/ground-truth.module';
     GroundTruthModule,
   ],
 })
-export class AppModule {}
+export class AppModule { }
