@@ -26,7 +26,22 @@ import { GroundTruthModule } from './ground-truth/ground-truth.module';
     TypeOrmModule.forRootAsync({
       useFactory: () => ({
         type: 'better-sqlite3',
-        driver: require('libsql'),
+        driver: function (filename: string, options: any) {
+          const libsql = require('libsql');
+          let urlStr = filename;
+          let authToken = undefined;
+          try {
+            if (urlStr.startsWith('libsql://') || urlStr.startsWith('http')) {
+              const url = new URL(urlStr);
+              if (url.searchParams.has('authToken')) {
+                authToken = url.searchParams.get('authToken') || undefined;
+                url.searchParams.delete('authToken');
+                urlStr = url.toString().replace(/\/$/, '');
+              }
+            }
+          } catch (e) {}
+          return new libsql(urlStr, { ...options, authToken });
+        },
         database: process.env.DATABASE_NAME || 'libsql://smartpulse-blazeking.aws-ap-south-1.turso.io',
         entities: [
           User,
