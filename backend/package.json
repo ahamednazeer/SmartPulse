@@ -82,5 +82,8 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
+  },
+  "overrides": {
+    "@libsql/hrana-client": "^0.9.0"
   }
 }
