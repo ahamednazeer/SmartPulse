@@ -242,6 +242,16 @@ function formatDateLabel(date: string): string {
     });
 }
 
+function formatMinutes(totalMinutes: number): string {
+    const rounded = Math.round(totalMinutes);
+    if (rounded < 60) {
+        return `${rounded}m`;
+    }
+    const hours = Math.floor(rounded / 60);
+    const mins = rounded % 60;
+    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+}
+
 function toDateKey(date: Date): string {
     const year = date.getFullYear();
     const month = `${date.getMonth() + 1}`.padStart(2, '0');
@@ -1404,12 +1414,11 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                                         <Clock size={14} /> Avg Screen Time
                                     </div>
                                     <div className="text-2xl font-chivo font-bold text-slate-100">
-                                        {Math.round(
+                                        {formatMinutes(
                                             summary?.avgScreenTime ??
                                             analysis?.keyMetrics.avgScreenTimeMinutes ??
                                             0,
                                         )}
-                                        m
                                     </div>
                                     <div className="text-xs text-slate-500 mt-1">per day</div>
                                 </div>
@@ -1431,12 +1440,11 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                                         <ChartBar size={14} /> Social Usage
                                     </div>
                                     <div className="text-2xl font-chivo font-bold text-slate-100">
-                                        {Math.round(
+                                        {formatMinutes(
                                             summary?.avgSocialMedia ??
                                             analysis?.keyMetrics.avgSocialMediaMinutes ??
                                             0,
                                         )}
-                                        m
                                     </div>
                                     <div className="text-xs text-slate-500 mt-1">per day</div>
                                 </div>
@@ -1445,14 +1453,13 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                                         <MoonStars size={14} /> Night Usage
                                     </div>
                                     <div className="text-2xl font-chivo font-bold text-slate-100">
-                                        {Math.round(
+                                        {formatMinutes(
                                             summary?.avgNightUsage ??
                                             analysis?.keyMetrics.avgNightUsageMinutes ??
                                             0,
                                         )}
-                                        m
                                     </div>
-                                    <div className="text-xs text-slate-500 mt-1">10 PM - 6 AM</div>
+                                    <div className="text-xs text-slate-500 mt-1">10 PM – 6 AM</div>
                                 </div>
                             </div>
 
@@ -1558,7 +1565,7 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                                                 {formatDateLabel(record.date)}
                                             </div>
                                             <div className="text-xs font-mono text-blue-400">
-                                                {record.screenTimeMinutes}m screen time
+                                                {formatMinutes(record.screenTimeMinutes)} screen time
                                             </div>
                                         </div>
                                         <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
@@ -1571,7 +1578,7 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                                         </div>
                                         <div className="grid grid-cols-2 gap-2 mt-2 text-[11px] text-slate-500 font-mono">
                                             <div>Unlocks: {record.unlockCount}</div>
-                                            <div>Night: {record.nightUsageMinutes}m</div>
+                                            <div>Night: {formatMinutes(record.nightUsageMinutes)}</div>
                                         </div>
                                     </div>
                                 ))}
@@ -1841,7 +1848,7 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                                     <div className="rounded-sm border border-slate-700/60 bg-slate-900/30 p-3">
                                         <div className="text-[11px] font-mono uppercase text-slate-500">Avg Screen</div>
                                         <div className="text-lg font-chivo font-bold text-slate-100 mt-1">
-                                            {weeklyReport.avgScreen}m
+                                            {formatMinutes(weeklyReport.avgScreen)}
                                         </div>
                                     </div>
                                     <div className="rounded-sm border border-slate-700/60 bg-slate-900/30 p-3">
@@ -1853,13 +1860,13 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                                     <div className="rounded-sm border border-slate-700/60 bg-slate-900/30 p-3">
                                         <div className="text-[11px] font-mono uppercase text-slate-500">Avg Night</div>
                                         <div className="text-lg font-chivo font-bold text-slate-100 mt-1">
-                                            {weeklyReport.avgNight}m
+                                            {formatMinutes(weeklyReport.avgNight)}
                                         </div>
                                     </div>
                                     <div className="rounded-sm border border-slate-700/60 bg-slate-900/30 p-3">
                                         <div className="text-[11px] font-mono uppercase text-slate-500">Total Screen</div>
                                         <div className="text-lg font-chivo font-bold text-slate-100 mt-1">
-                                            {weeklyReport.totalScreenMinutes}m
+                                            {formatMinutes(weeklyReport.totalScreenMinutes)}
                                         </div>
                                     </div>
                                 </div>
@@ -1889,7 +1896,7 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                                     <div className="p-4 rounded border border-slate-700/60 bg-slate-900/50">
                                         <div className="text-sm font-mono uppercase text-slate-400">Total Screen Time</div>
                                         <div className="text-3xl font-chivo font-bold text-slate-100 mt-2">
-                                            {Math.round(records[0]?.screenTimeMinutes ?? summary?.avgScreenTime ?? 0)}m
+                                            {formatMinutes(records[0]?.screenTimeMinutes ?? summary?.avgScreenTime ?? 0)}
                                         </div>
                                     </div>
                                     <div className="p-4 rounded border border-slate-700/60 bg-slate-900/50">
@@ -1901,13 +1908,13 @@ export default function AnalysisWorkspace({ view }: AnalysisWorkspaceProps) {
                                     <div className="p-4 rounded border border-slate-700/60 bg-slate-900/50">
                                         <div className="text-sm font-mono uppercase text-slate-400">Social Usage</div>
                                         <div className="text-3xl font-chivo font-bold text-slate-100 mt-2">
-                                            {Math.round(records[0]?.socialMediaMinutes ?? summary?.avgSocialMedia ?? 0)}m
+                                            {formatMinutes(records[0]?.socialMediaMinutes ?? summary?.avgSocialMedia ?? 0)}
                                         </div>
                                     </div>
                                     <div className="p-4 rounded border border-slate-700/60 bg-slate-900/50">
                                         <div className="text-sm font-mono uppercase text-slate-400">Night Usage</div>
                                         <div className="text-3xl font-chivo font-bold text-slate-100 mt-2">
-                                            {Math.round(records[0]?.nightUsageMinutes ?? summary?.avgNightUsage ?? 0)}m
+                                            {formatMinutes(records[0]?.nightUsageMinutes ?? summary?.avgNightUsage ?? 0)}
                                         </div>
                                     </div>
                                 </div>

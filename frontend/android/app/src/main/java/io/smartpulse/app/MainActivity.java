@@ -10,5 +10,6 @@ public class MainActivity extends BridgeActivity {
         // Register custom in-app plugin before bridge initialization.
         registerPlugin(SmartPulseUsagePlugin.class);
         super.onCreate(savedInstanceState);
+        UsageSyncWorker.schedule(this);
     }
 }

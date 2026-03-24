@@ -100,6 +100,7 @@ public class SmartPulseUsagePlugin extends Plugin {
     private static final int MINUTES_IN_MILLIS = 60 * 1000;
     private static final int NOTIFICATION_OPEN_WINDOW_MS = 2 * 60 * 1000;
     private static final int MAX_SESSION_EVENTS = 250;
+    private static final int SHORT_SESSION_MAX_MS = 2 * MINUTES_IN_MILLIS;
     private static final int EVENT_NOTIFICATION_INTERRUPTION =
         resolveUsageEventConstant("NOTIFICATION_INTERRUPTION");
 
@@ -275,6 +276,8 @@ public class SmartPulseUsagePlugin extends Plugin {
 
         Map<String, Long> appUsageMap = new HashMap<>();
         Map<String, Long> lastTimeUsedMap = new HashMap<>();
+        Map<Integer, Double> hourlyMinutes = new HashMap<>();
+        Map<String, CategoryBucket> categoryTimeline = new HashMap<>();
         
         // Advanced Trackers
         LinkedList<String> habitSequence = new LinkedList<>(); 
@@ -282,17 +285,26 @@ public class SmartPulseUsagePlugin extends Plugin {
         long totalReactionLatencyMs = 0;
         int reactedNotifications = 0;
 
+        int unlockCount = 0;
+        int shortSessionCount = 0;
+        int commuteShortSessionCount = 0;
+        long longestSessionMs = 0;
         int notificationCount = 0;
         UsageEvents.Event currentEvent = new UsageEvents.Event();
 
         while (events.hasNextEvent()) {
             events.getNextEvent(currentEvent);
             String pkg = currentEvent.getPackageName();
+            int eventType = currentEvent.getEventType();
 
-            if (currentEvent.getEventType() == 12) { // NOTIFICATION_INTERRUPTION
+            if (eventType == UsageEvents.Event.KEYGUARD_HIDDEN) {
+                unlockCount++;
+            }
+
+            if (eventType == EVENT_NOTIFICATION_INTERRUPTION || eventType == 12) { // NOTIFICATION_INTERRUPTION
                 notificationCount++;
                 lastNotificationTimeMs = currentEvent.getTimeStamp();
-            } else if (currentEvent.getEventType() == UsageEvents.Event.ACTIVITY_RESUMED) {
+            } else if (eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
                 lastTimeUsedMap.put(pkg, currentEvent.getTimeStamp());
                 
                 // Track habit sequences
@@ -307,19 +319,34 @@ public class SmartPulseUsagePlugin extends Plugin {
                     reactedNotifications++;
                     lastNotificationTimeMs = 0;
                 }
-            } else if (currentEvent.getEventType() == UsageEvents.Event.ACTIVITY_PAUSED ||
-                    currentEvent.getEventType() == UsageEvents.Event.ACTIVITY_STOPPED) {
+            } else if (eventType == UsageEvents.Event.ACTIVITY_PAUSED ||
+                    eventType == UsageEvents.Event.ACTIVITY_STOPPED) {
                 if (lastTimeUsedMap.containsKey(pkg)) {
-                    long duration = currentEvent.getTimeStamp() - lastTimeUsedMap.get(pkg);
+                    long startTime = lastTimeUsedMap.get(pkg);
+                    long endTime = currentEvent.getTimeStamp();
+                    long duration = endTime - startTime;
+                    if (duration > 0) {
+                        longestSessionMs = Math.max(longestSessionMs, duration);
+                        if (duration <= SHORT_SESSION_MAX_MS) {
+                            shortSessionCount++;
+                            if (isCommuteHour(startTime) || isCommuteHour(endTime)) {
+                                commuteShortSessionCount++;
+                            }
+                        }
+                    }
                     appUsageMap.put(pkg, appUsageMap.getOrDefault(pkg, 0L) + duration);
                     lastTimeUsedMap.remove(pkg);
+                    
+                    String category = categorizePackage(pkg, resolveAppLabel(pkg));
+                    distributeSession(startTime, endTime, category, hourlyMinutes, categoryTimeline);
                 }
             }
         }
 
         int totalScreenTimeMinutes = 0;
         int socialTimeMinutes = 0;
-        int nightUsageMinutes = 0;
+        int nightUsageMinutes = roundMinutes(sumNightMinutes(hourlyMinutes));
+        Integer peakUsageHour = findPeakHour(hourlyMinutes);
         
         for (Map.Entry<String, Long> entry : appUsageMap.entrySet()) {
             String pkg = entry.getKey();
@@ -338,18 +365,24 @@ public class SmartPulseUsagePlugin extends Plugin {
         }
 
         SharedPreferences screenPrefs = getContext().getSharedPreferences("SmartPulseScreenPrefs", Context.MODE_PRIVATE);
-        int realScreenTimeMs = (int) screenPrefs.getLong("totalScreenTimeMs", 0);
-        if (realScreenTimeMs > 60000) {
-             totalScreenTimeMinutes = realScreenTimeMs / 60000;
+        long lastSessionDurationMs = screenPrefs.getLong("lastSessionDurationMs", 0);
+        if (lastSessionDurationMs > 0) {
+            longestSessionMs = Math.max(longestSessionMs, lastSessionDurationMs);
         }
+        int longestSessionMinutes = longestSessionMs > 0
+            ? (int) Math.round(longestSessionMs / 60000.0)
+            : 0;
 
         int avgLatencySec = reactedNotifications > 0 ? (int)((totalReactionLatencyMs / reactedNotifications) / 1000) : 0;
         int stepCount = screenPrefs.getInt("dailyStepCount", 0);
         
         snapshot.screenTimeMinutes = totalScreenTimeMinutes;
         snapshot.socialMediaMinutes = socialTimeMinutes;
+        snapshot.nightUsageMinutes = nightUsageMinutes;
+        snapshot.peakUsageHour = peakUsageHour;
+        snapshot.longestSessionMinutes = longestSessionMinutes;
         snapshot.notificationCount = notificationCount;
-        snapshot.unlockCount = 0; 
+        snapshot.unlockCount = unlockCount; 
 
         try {
             JSObject advancedStats = new JSObject();
@@ -359,8 +392,22 @@ public class SmartPulseUsagePlugin extends Plugin {
             for(String s : habitSequence) habitArray.put(s);
             advancedStats.put("habitSequence", habitArray);
             
-            snapshot.activityContext = buildActivityContext(totalScreenTimeMinutes, snapshot.unlockCount, 0);
+            snapshot.activityContext = buildActivityContext(
+                totalScreenTimeMinutes,
+                shortSessionCount,
+                commuteShortSessionCount
+            );
             snapshot.activityContext.put("advancedSensors", advancedStats);
+
+            snapshot.locationContext = buildLocationContext(hourlyMinutes);
+            
+            JSObject timelineJson = new JSObject();
+            for (Map.Entry<String, CategoryBucket> entry : categoryTimeline.entrySet()) {
+                if (entry.getValue().hasRoundedUsage()) {
+                    timelineJson.put(entry.getKey(), entry.getValue().toJson());
+                }
+            }
+            snapshot.appCategoryTimeline = timelineJson;
         } catch (Exception e) {}
 
         return snapshot;

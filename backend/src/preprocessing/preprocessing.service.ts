@@ -356,27 +356,27 @@ export class PreprocessingService {
         continue;
       }
 
-      const screenTime = this.toStrictBoundedNumber(
+      const screenTime = this.toClampedNumber(
         record.screenTimeMinutes,
         0,
         1440,
       );
-      const unlockCount = this.toStrictBoundedNumber(
+      const unlockCount = this.toClampedNumber(
         record.unlockCount,
         0,
         2000,
       );
-      const socialMedia = this.toStrictBoundedNumber(
+      let socialMedia = this.toClampedNumber(
         record.socialMediaMinutes,
         0,
         1440,
       );
-      const nightUsage = this.toStrictBoundedNumber(
+      let nightUsage = this.toClampedNumber(
         record.nightUsageMinutes,
         0,
         720,
       );
-      const longestSession = this.toStrictBoundedNumber(
+      let longestSession = this.toClampedNumber(
         record.longestSessionMinutes,
         0,
         720,
@@ -393,13 +393,16 @@ export class PreprocessingService {
         continue;
       }
 
-      if (
-        socialMedia > screenTime ||
-        nightUsage > screenTime ||
-        longestSession > screenTime
-      ) {
-        removedInvalid += 1;
-        continue;
+      // Clamp sub-metrics to screenTime instead of rejecting the record.
+      // Rounding differences and edge cases can legitimately cause these.
+      if (socialMedia > screenTime) {
+        socialMedia = screenTime;
+      }
+      if (nightUsage > screenTime) {
+        nightUsage = screenTime;
+      }
+      if (longestSession > screenTime) {
+        longestSession = screenTime;
       }
 
       const peakUsageHour =
@@ -1323,6 +1326,22 @@ export class PreprocessingService {
       return null;
     }
     return value;
+  }
+
+  /**
+   * Like toStrictBoundedNumber but clamps out-of-range values to [min, max]
+   * instead of rejecting them. This prevents silent data loss when the
+   * Android plugin reports slightly out-of-bound metrics.
+   */
+  private toClampedNumber(
+    value: unknown,
+    min: number,
+    max: number,
+  ): number | null {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return null;
+    }
+    return this.clamp(value, min, max);
   }
 
   private toBoundedNumberOrDefault(

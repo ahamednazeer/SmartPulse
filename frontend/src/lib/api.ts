@@ -1,4 +1,5 @@
 import { isNativePlatform } from '@/lib/mobile/capacitorBridge';
+import { getPreference, removePreference, setPreference } from '@/lib/mobile/preferences';
 import { CapacitorHttp } from '@capacitor/core';
 
 function isCapacitorLocalhostRuntime(): boolean {
@@ -379,16 +380,31 @@ export interface ModelMonitoringResponse {
 
 class ApiClient {
     private token: string | null = null;
+    private readonly tokenKey = 'smartpulse_token';
+    private readonly apiBaseKey = 'smartpulse_api_base';
 
     constructor() {
         if (typeof window !== 'undefined') {
-            this.token = localStorage.getItem('smartpulse_token');
+            this.token = localStorage.getItem(this.tokenKey);
+        }
+        if (typeof window !== 'undefined' && isNativePlatform()) {
+            void getPreference(this.tokenKey)
+                .then((value) => {
+                    if (!value || this.token) {
+                        return;
+                    }
+                    this.token = value;
+                    localStorage.setItem(this.tokenKey, value);
+                })
+                .catch(() => {
+                    // Ignore preference hydration failures.
+                });
         }
     }
 
     getToken(): string | null {
         if (typeof window !== 'undefined') {
-            this.token = localStorage.getItem('smartpulse_token');
+            this.token = localStorage.getItem(this.tokenKey);
         }
         return this.token;
     }
@@ -396,14 +412,20 @@ class ApiClient {
     setToken(token: string) {
         this.token = token;
         if (typeof window !== 'undefined') {
-            localStorage.setItem('smartpulse_token', token);
+            localStorage.setItem(this.tokenKey, token);
+        }
+        if (typeof window !== 'undefined' && isNativePlatform()) {
+            void setPreference(this.tokenKey, token);
         }
     }
 
     clearToken() {
         this.token = null;
         if (typeof window !== 'undefined') {
-            localStorage.removeItem('smartpulse_token');
+            localStorage.removeItem(this.tokenKey);
+        }
+        if (typeof window !== 'undefined' && isNativePlatform()) {
+            void removePreference(this.tokenKey);
         }
     }
 
@@ -413,6 +435,9 @@ class ApiClient {
     ): Promise<T> {
         const apiBase = normalizeApiBase(getRawApiBase());
         const requestUrl = `${apiBase}${endpoint}`;
+        if (typeof window !== 'undefined' && isNativePlatform()) {
+            void setPreference(this.apiBaseKey, apiBase);
+        }
         const headers: Record<string, string> = {
             'Content-Type': 'application/json',
             ...((options.headers as Record<string, string>) || {}),
