@@ -20,6 +20,7 @@ import { FeatureStoreRecord } from './entities/feature-store-record.entity';
 import { ModelProfile } from './entities/model-profile.entity';
 import { GroundTruthLabel } from './entities/ground-truth-label.entity';
 import { GroundTruthModule } from './ground-truth/ground-truth.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -55,6 +56,8 @@ import { GroundTruthModule } from './ground-truth/ground-truth.module';
           GroundTruthLabel,
         ],
         synchronize: true,
+        retryAttempts: 5,
+        retryDelay: 3000,
       }),
     }),
     AuthModule,
@@ -68,6 +71,7 @@ import { GroundTruthModule } from './ground-truth/ground-truth.module';
     NotificationModule,
     AnalyticsModule,
     GroundTruthModule,
+    HealthModule,
   ],
 })
 export class AppModule { }
